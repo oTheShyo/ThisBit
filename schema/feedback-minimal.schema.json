@@ -90,10 +90,10 @@
           "$ref": "#/$defs/versionedObjectFormat"
         },
         {
-          "$ref": "urn:edithere:feedback-minimal:4"
+          "$ref": "urn:thisbit:feedback-minimal:4"
         },
         {
-          "$ref": "urn:edithere:feedback-minimal:3"
+          "$ref": "urn:thisbit:feedback-minimal:3"
         }
       ]
     },
@@ -398,7 +398,7 @@
           ]
         },
         "$schema": {
-          "const": "urn:edithere:feedback-minimal:2"
+          "const": "urn:thisbit:feedback-minimal:2"
         },
         "schemaVersion": {
           "const": "feedback-minimal-2"

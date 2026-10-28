@@ -93,7 +93,7 @@ test('only a boxed region can own or be a child annotation', () => {
 });
 
 test('v3 feedback still reads and upgrades to the v4 object shape', () => {
-  const v3 = {schemaVersion:'feedback-minimal-3', $schema:'urn:edithere:feedback-minimal:3',
+  const v3 = {schemaVersion:'feedback-minimal-3', $schema:'urn:thisbit:feedback-minimal:3',
     tool:{name:'Thisbit',version:'0.11.1'}, exportedAt:'2026-10-21T00:00:00Z', annotationSpace:'result',
     objects:[{kind:'region', source:{x1:1,y1:1,x2:9,y2:9},
       movement:{rect:{x1:2,y1:2,x2:10,y2:10},dx:1,dy:1}, annotations:[{number:1,text:'旧版'}]}]};

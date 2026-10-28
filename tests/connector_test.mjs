@@ -41,7 +41,7 @@ function videoFeedback(frameCount = 2) {
 
 function versionedImageFeedback(feedback = {}) {
   return {
-    $schema: 'urn:edithere:feedback-minimal:2',
+    $schema: 'urn:thisbit:feedback-minimal:2',
     schemaVersion: 'feedback-minimal-2',
     tool: { name: 'Thisbit', version: '0.11.1-test' },
     exportedAt: '2026-10-16T16:30:00+08:00',
@@ -533,7 +533,7 @@ test('versioned image feedback preserves annotations and images on success and r
   assert.equal(JSON.stringify(feedback), before, 'metadata handling must preserve the feedback payload');
   assert.equal(feedbackResult(versionedImageFeedback({ exportedAt: '2026-10-16T08:30:00.123Z' })).isError, false);
   assert.equal(feedbackResult(versionedImageFeedback({ exportedAt: '2024-02-29T23:30:00-08:00' })).isError, false);
-  const compact = {...versionedImageFeedback(),schemaVersion:'feedback-minimal-4',$schema:'urn:edithere:feedback-minimal:4'}; delete compact.exportedAt;
+  const compact = {...versionedImageFeedback(),schemaVersion:'feedback-minimal-4',$schema:'urn:thisbit:feedback-minimal:4'}; delete compact.exportedAt;
   assert.equal(feedbackResult(compact).isError, false);
   assert.doesNotMatch(resultText(feedbackResult(compact)), /导出时间|undefined/);
   assert.equal(feedbackResult(versionedImageFeedback({ tool: { name: 'Thisbit', version: 'v'.repeat(100) } })).isError, false);
@@ -588,7 +588,7 @@ function typedImageFeedback() {
   const source = { x1: 10, y1: 2, x2: 50, y2: 10 };
   const target = { x1: 20, y1: 3, x2: 100, y2: 15 };
   return {
-    $schema: 'urn:edithere:feedback-minimal:3', schemaVersion: 'feedback-minimal-3',
+    $schema: 'urn:thisbit:feedback-minimal:3', schemaVersion: 'feedback-minimal-3',
     tool: { name: 'Thisbit', version: '0.11.1-test' }, exportedAt: '2026-10-17T10:00:00+08:00',
     annotationSpace: 'result', image: `data:image/png;base64,${bundlePng.toString('base64')}`,
     objects: [

@@ -76,7 +76,7 @@ Thisbit 是一个**本机桌面程序**，让用户在截图或设计图上直�
 
 ## 解读反馈
 
-- 图片反馈的新导出使用 `schemaVersion: "feedback-minimal-4"`，省略重复的根级 `$schema`；旧文件的 `urn:edithere:feedback-minimal:3` 或 `urn:edithere:feedback-minimal:4` 标识继续可读，提供时必须与 `schemaVersion` 匹配。连接器继续读取 v3、v2、无版本对象和旧并行数组，另有 `tool`；新导出省略 `exportedAt`，旧文件的该字段仍按带时区 ISO 时间校验。该 URN 是格式标识，无需联网获取；遇到未知显式版本应停止解读并核对版本。
+- 图片反馈的新导出使用 `schemaVersion: "feedback-minimal-4"`，省略重复的根级 `$schema`；旧文件的 `urn:thisbit:feedback-minimal:3` 或 `urn:thisbit:feedback-minimal:4` 标识继续可读，提供时必须与 `schemaVersion` 匹配。连接器继续读取 v3、v2、无版本对象和旧并行数组，另有 `tool`；新导出省略 `exportedAt`，旧文件的该字段仍按带时区 ISO 时间校验。该 URN 是格式标识，无需联网获取；遇到未知显式版本应停止解读并核对版本。
 - 属于同一个被移动组件的批注收在父对象的 `children` 数组里：父项是带 `movement` 的 `kind:"region"`，子项结构与父项相同，但不含 `children`。按「父对象管整体、子批注管局部」解释，不要把子批注再当成独立区域处理；导出只嵌套一层，遇到更深嵌套时按父→子顺序展开后再解释。子批注没有自己的 `movement`，位置相对调整后的画面；`children` 排在父对象字段之后，子批注在列表中也紧跟父对象。
 - `image` 描述调整前原图，默认 `mode:"file"` 指向同目录图片，也可 `embedded` 使用 `dataUrl`，或 `none` 仅保留原图信息。均含 MIME、像素宽高、未知时为 null 的 devicePixelRatio、实际编码字节的 SHA-256；可选 `image.preview` 是带编号的 JPEG。一起保留 file 模式的原图，不将预览图当成原图；旧字符串 image 与缺图时的同名 PNG 继续兼容。
 - `annotationSpace` 固定为 `result`：批注位置对应**调整后**的画面。坐标原点在图像左上角，单位是**图像像素**，独立于窗口位置与缩放——**不能**直接当作屏幕坐标或网页 CSS 像素。

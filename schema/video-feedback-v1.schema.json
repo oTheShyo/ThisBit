@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:edithere:video-feedback:1",
+  "$id": "urn:thisbit:video-feedback:1",
   "title": "Thisbit timestamped video feedback v1",
   "description": "Timestamped screenshot feedback. Each frame.feedback is independently readable image feedback; feedback.image specifies file, embedded or none. Older frame.imageFile references and data URLs remain readable. Root objects is a chronological index of those same objects, not additional instructions. Coordinates use the frame image pixels.",
   "type": "object",
@@ -214,7 +214,7 @@
                   ],
                   "properties": {
                     "to": {
-                      "$ref": "urn:edithere:feedback-minimal:3#/$defs/rectangle"
+                      "$ref": "urn:thisbit:feedback-minimal:3#/$defs/rectangle"
                     }
                   }
                 },
@@ -226,10 +226,10 @@
                 "items": {
                   "oneOf": [
                     {
-                      "$ref": "urn:edithere:feedback-minimal:3#/$defs/text"
+                      "$ref": "urn:thisbit:feedback-minimal:3#/$defs/text"
                     },
                     {
-                      "$ref": "urn:edithere:feedback-minimal:3#/$defs/numberedAnnotation"
+                      "$ref": "urn:thisbit:feedback-minimal:3#/$defs/numberedAnnotation"
                     }
                   ]
                 }
@@ -242,7 +242,7 @@
                 "description": "Unique within this feedback file. Not a cross-round component identity."
               },
               "recognizedText": {
-                "$ref": "urn:edithere:feedback-minimal:3#/$defs/recognizedText",
+                "$ref": "urn:thisbit:feedback-minimal:3#/$defs/recognizedText",
                 "deprecated": true
               },
               "kind": {
@@ -253,13 +253,13 @@
                 ]
               },
               "source": {
-                "$ref": "urn:edithere:feedback-minimal:3#/$defs/rectangle"
+                "$ref": "urn:thisbit:feedback-minimal:3#/$defs/rectangle"
               },
               "point": {
-                "$ref": "urn:edithere:feedback-minimal:3#/$defs/point"
+                "$ref": "urn:thisbit:feedback-minimal:3#/$defs/point"
               },
               "result": {
-                "$ref": "urn:edithere:feedback-minimal:3#/$defs/movementResult",
+                "$ref": "urn:thisbit:feedback-minimal:3#/$defs/movementResult",
                 "deprecated": true
               },
               "frameId": {
@@ -272,10 +272,10 @@
                 "maximum": 9007199254740
               },
               "ocrtext": {
-                "$ref": "urn:edithere:feedback-minimal:3#/$defs/ocrtext"
+                "$ref": "urn:thisbit:feedback-minimal:3#/$defs/ocrtext"
               },
               "movement": {
-                "$ref": "urn:edithere:feedback-minimal:3#/$defs/movementResult",
+                "$ref": "urn:thisbit:feedback-minimal:3#/$defs/movementResult",
                 "description": "Final absolute target and displacement, stored once. Omitted when unchanged."
               }
             },

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:edithere:project:3.0.0",
+  "$id": "urn:thisbit:project:3.0.0",
   "title": "Thisbit editable project v3.0.0",
   "type": "object",
   "additionalProperties": false,

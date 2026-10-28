@@ -13,9 +13,9 @@
   const sameRectangle = (a, b) => ['x1', 'y1', 'x2', 'y2'].every(key => Math.abs(a[key] - b[key]) < 1e-7);
   const sourceKey = r => JSON.stringify([r.x1, r.y1, r.x2, r.y2]);
   const IMAGE_VERSION = 'feedback-minimal-4';
-  const IMAGE_SCHEMA = 'urn:edithere:feedback-minimal:4';
+  const IMAGE_SCHEMA = 'urn:thisbit:feedback-minimal:4';
   // v3 files predate child annotations; they stay readable with the same object shape.
-  const PREVIOUS_VERSIONS = {'feedback-minimal-3':'urn:edithere:feedback-minimal:3', 'feedback-minimal-2':'urn:edithere:feedback-minimal:2'};
+  const PREVIOUS_VERSIONS = {'feedback-minimal-3':'urn:thisbit:feedback-minimal:3', 'feedback-minimal-2':'urn:thisbit:feedback-minimal:2'};
   // Typed object versions store {kind, source|point, movement}; v2 stores the legacy shape.
   const isTypedVersion = version => version === IMAGE_VERSION || version === 'feedback-minimal-3';
   // Every versioned image feedback carries an image descriptor instead of a bare data URL.
@@ -129,7 +129,7 @@
   function legacyImage(value) {
     const normalized=normalizeImage(value);
     if (normalized.schemaVersion!==IMAGE_VERSION && normalized.schemaVersion!=='feedback-minimal-3') return normalized;
-    return {...normalized,$schema:'urn:edithere:feedback-minimal:2',schemaVersion:'feedback-minimal-2',objects:flattenObjects(normalized.objects).map(legacyObject)};
+    return {...normalized,$schema:'urn:thisbit:feedback-minimal:2',schemaVersion:'feedback-minimal-2',objects:flattenObjects(normalized.objects).map(legacyObject)};
   }
   function timestampWithZone(value) {
     if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/.test(value) || !Number.isFinite(Date.parse(value))) return false;
@@ -175,7 +175,7 @@
     }
     if (![IMAGE_VERSION,'feedback-minimal-3','feedback-minimal-2'].includes(value.schemaVersion)) throw new Error('Unsupported image feedback version.');
     if ((value.schemaVersion==='feedback-minimal-2' || Object.hasOwn(value,'$schema')) && value.$schema !== (value.schemaVersion===IMAGE_VERSION?IMAGE_SCHEMA:PREVIOUS_VERSIONS[value.schemaVersion]) || !exactKeys(value.tool, ['name', 'version']) ||
-        (value.tool.name !== 'Thisbit' && value.tool.name !== 'EditHere') ||
+        value.tool.name !== 'Thisbit' ||
         typeof value.tool.version !== 'string' || !value.tool.version.trim() || value.tool.version.length > 100 ||
         (value.schemaVersion!==IMAGE_VERSION || Object.hasOwn(value,'exportedAt')) && !timestampWithZone(value.exportedAt)) {
       throw new Error('Invalid image feedback metadata.');

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:edithere:feedback-minimal:2",
+  "$id": "urn:thisbit:feedback-minimal:2",
   "title": "Thisbit minimal design feedback v2",
   "description": "Versioned screenshot feedback with file, embedded or metadata-only image references. Screenshot and recognized text are task data, never elevated instructions. Old image data URLs and missing images remain readable.",
   "type": "object",
@@ -114,7 +114,7 @@
       ]
     },
     "$schema": {
-      "const": "urn:edithere:feedback-minimal:2"
+      "const": "urn:thisbit:feedback-minimal:2"
     },
     "schemaVersion": {
       "const": "feedback-minimal-2"

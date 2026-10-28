@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:edithere:video-project:1",
+  "$id": "urn:thisbit:video-project:1",
   "title": "Thisbit editable video project v1",
   "description": "The source video is referenced by address. Only annotated frames are stored, in ascending timestampUs order. Each frame contains one lossless editable image project. The application additionally checks unique frame IDs/timestamps, matching timestampMs=floor(timestampUs/1000), duration bounds, consistent dimensions, 128 million cumulative pixels, 10000 total notes/movements and a 512 MiB file limit.",
   "type": "object",

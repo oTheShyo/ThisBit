@@ -68,9 +68,9 @@ def export(name):
 
 def retrieve_schema(uri):
     # Resolve only bundled schemas; validation must never fetch a network URL.
-    if uri == "urn:edithere:feedback-minimal:4":
+    if uri == "urn:thisbit:feedback-minimal:4":
         return Resource.from_contents(schema("feedback-minimal-v4.schema.json"))
-    if uri == "urn:edithere:feedback-minimal:3":
+    if uri == "urn:thisbit:feedback-minimal:3":
         return Resource.from_contents(schema("feedback-minimal-v3.schema.json"))
     name = uri.rsplit("/", 1)[-1]
     if name not in SCHEMAS:
@@ -217,7 +217,7 @@ print(f"PASS: {len(SCHEMAS)} published schemas load")
 # Contract probes do not depend on C++ implementation helpers. Both schema
 # entry points must accept compatibility files and reject invalid new metadata.
 image_probe = {
-    "$schema": "urn:edithere:feedback-minimal:2", "schemaVersion": "feedback-minimal-2",
+    "$schema": "urn:thisbit:feedback-minimal:2", "schemaVersion": "feedback-minimal-2",
     "tool": {"name": "Thisbit", "version": "schema-contract"}, "exportedAt": "2026-10-17T00:00:00Z",
     "annotationSpace": "result", "objects": [],
 }
@@ -266,7 +266,7 @@ for schema_name in ("feedback-minimal-v2.schema.json", "feedback-minimal.schema.
 for schema_name in ("feedback-minimal-v3.schema.json", "feedback-minimal.schema.json"):
     validate(schema_name, v3_image_probe)
     older_v3 = copy.deepcopy(v3_image_probe)
-    older_v3["$schema"] = "urn:edithere:feedback-minimal:3"
+    older_v3["$schema"] = "urn:thisbit:feedback-minimal:3"
     for item in older_v3["objects"]:
         if "movement" in item:
             item["result"] = item.pop("movement")

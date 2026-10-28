@@ -46,7 +46,7 @@ test('ordinary and movement objects follow their first visible annotation in one
 test('compact v3 reads older schema IDs and empty movements without changing the saved file',()=>{
   const value={...exported(),exportedAt:'2026-10-17T10:00:00+08:00'},old=structuredClone(value);
   old.schemaVersion='feedback-minimal-3';
-  old.$schema='urn:edithere:feedback-minimal:3';
+  old.$schema='urn:thisbit:feedback-minimal:3';
   for(const object of old.objects) {
     if(object.movement) {object.result=object.movement;object.movements=[{to:object.movement.rect}];delete object.movement;}
     else object.movements=[];
@@ -238,7 +238,7 @@ test('J08/J09 reject ambiguous types and forged derived results before Agent acc
     v=>v.objects[2].source=null,
     v=>v.objects[2].recognizedText={text:'伪造',engine:'ocr'},
     v=>v.objects[3].movement={rect:source,dx:0,dy:0,scaleX:1,scaleY:1},
-    v=>{v.schemaVersion='feedback-minimal-2';v.$schema='urn:edithere:feedback-minimal:2';},
+    v=>{v.schemaVersion='feedback-minimal-2';v.$schema='urn:thisbit:feedback-minimal:2';},
     v=>delete v.objects[1].kind,
     v=>v.objects[1].annotations[0].number=1
   ];

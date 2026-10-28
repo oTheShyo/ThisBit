@@ -115,7 +115,7 @@ test('explicit submit writes native complete JSON; receipt omits image; retry is
 });
 
 test('versioned metadata survives submission, restart, disk verification and crash recovery', () => {
-  const metadata = {$schema:'urn:edithere:feedback-minimal:2', schemaVersion:'feedback-minimal-2',
+  const metadata = {$schema:'urn:thisbit:feedback-minimal:2', schemaVersion:'feedback-minimal-2',
     tool:{name:'Thisbit', version:'0.11.1'}, exportedAt:'2026-10-16T16:30:00+08:00'};
   const current = {...metadata, ...feedback};
   const paths = fixture(), store = new AgentSessions(paths), session = create(store, paths);
@@ -144,7 +144,7 @@ test('recognized screenshot text survives Agent submission, receipts and restart
 
 test('a declared image version cannot omit or replace its metadata', () => {
   const paths = fixture(), store = new AgentSessions(paths), session = create(store, paths);
-  const current = {...feedback, $schema:'urn:edithere:feedback-minimal:2', schemaVersion:'feedback-minimal-2',
+  const current = {...feedback, $schema:'urn:thisbit:feedback-minimal:2', schemaVersion:'feedback-minimal-2',
     tool:{name:'Thisbit',version:'0.11.1'}, exportedAt:'2026-10-16T08:30:00Z'};
   for (const invalid of [
     {...current,schemaVersion:'feedback-minimal-3'}, {...current,$schema:null},

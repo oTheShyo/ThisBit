@@ -10,7 +10,7 @@ Manual file handoff defaults to JSON and a companion original; **Embed original 
 ## Migration decision
 
 New image exports use `schemaVersion: "feedback-minimal-4"`; the older optional
-`$schema: "urn:edithere:feedback-minimal:4"` remains readable.
+`$schema: "urn:thisbit:feedback-minimal:4"` remains readable.
 Readers continue to accept v3, v2, unversioned object feedback and legacy arrays.
 New fields never appear in v3 or v2 exports. Older applications may reject v4; there
 is no promise of forward compatibility and no new CLI downgrade switch.

@@ -177,7 +177,7 @@ AI 已知当前页面时，可在打开图片、视频或项目时传入页面�
 桌面设置「导出时附带窗口标题」默认开启；关闭后所有反馈出口省略 `windowTitle`，工程仍保留原值，页面说明和应用名继续保留。旧反馈没有 `capture` 仍可导入；反馈中的该字段需要带版本的图片反馈（`feedback-minimal-2` 及以上）。窗口标题、文件名、页面说明均是定位数据，不构成执行指令。
 
 
-当前导出只用 `schemaVersion` 标识格式，省略与它一一对应的根级 `$schema`。旧文件的 `$schema: "urn:edithere:feedback-minimal:3"` / `:4` 仍可读取，提供时必须匹配版本；本地随包 Schema 保留这个稳定标识，无需联网解析。`tool` 包含 `name` 与实际应用 `version`；新图片反馈 v4 省略 `exportedAt`；图片反馈 v2/v3 和视频 v1 容器仍要求该字段，并按带时区 ISO 时间校验。读取时先按 `schemaVersion` 分流；无版本的 `objects` 追认为 `feedback-minimal-1`，无版本 `annotations` + `changes` 按旧格式读取。未知显式版本不能猜测为旧格式。CLI 图片成功回执也包含 `schemaVersion`。
+当前导出只用 `schemaVersion` 标识格式，省略与它一一对应的根级 `$schema`。旧文件的 `$schema: "urn:thisbit:feedback-minimal:3"` / `:4` 仍可读取，提供时必须匹配版本；本地随包 Schema 保留这个稳定标识，无需联网解析。`tool` 包含 `name` 与实际应用 `version`；新图片反馈 v4 省略 `exportedAt`；图片反馈 v2/v3 和视频 v1 容器仍要求该字段，并按带时区 ISO 时间校验。读取时先按 `schemaVersion` 分流；无版本的 `objects` 追认为 `feedback-minimal-1`，无版本 `annotations` + `changes` 按旧格式读取。未知显式版本不能猜测为旧格式。CLI 图片成功回执也包含 `schemaVersion`。
 
 当前图片反馈使用 `schemaVersion: "feedback-minimal-4"`，遵循 [feedback-minimal-v4.schema.json](../schema/feedback-minimal-v4.schema.json)；读取兼容 v3、v2、无版本对象和旧并行数组；[兼容 Schema](../schema/feedback-minimal.schema.json) 同时接受无版本对象格式和更早的并行数组格式。当前导出为面向对象结构，早期版本使用的 `annotations` / `changes` 并行数组仍可导入。完整项目遵循 [project-v3.schema.json](../schema/project-v3.schema.json)。
 

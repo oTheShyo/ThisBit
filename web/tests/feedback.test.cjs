@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const version = /project\(\s*Thisbit\s+VERSION\s+(\d+\.\d+\.\d+)\b/.exec(fs.readFileSync(path.join(__dirname, '../../CMakeLists.txt'), 'utf8'))[1];
 const exportedAt = '2026-10-16T16:30:00+08:00';
-const metadata = {$schema:'urn:edithere:feedback-minimal:2', schemaVersion:'feedback-minimal-2', tool:{name:'Thisbit', version},exportedAt};
+const metadata = {$schema:'urn:thisbit:feedback-minimal:2', schemaVersion:'feedback-minimal-2', tool:{name:'Thisbit', version},exportedAt};
 const rectangle = (x1, y1, x2, y2) => ({x1, y1, x2, y2});
 const image = require('./image-fixture.cjs').pngData(320,180);
 const imageDescriptor=mode=>feedback.imageFormat.descriptor(image,mode,'feedback.png');

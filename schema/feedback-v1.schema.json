@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:edithere:feedback:1.0.0",
+  "$id": "urn:thisbit:feedback:1.0.0",
   "title": "Thisbit feedback v1.0.0",
   "type": "object",
   "additionalProperties": false,

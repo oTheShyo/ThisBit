@@ -1375,8 +1375,8 @@ static void feedbackFields(const QJsonObject &feedback) {
         // shape, so each version is only distinguished by its own schema id.
         const auto version = feedback["schemaVersion"].toString();
         const bool previous = version == "feedback-minimal-2";
-        const auto schemaId = previous                      ? "urn:edithere:feedback-minimal:2"
-                              : version == "feedback-minimal-3" ? "urn:edithere:feedback-minimal:3"
+        const auto schemaId = previous                      ? "urn:thisbit:feedback-minimal:2"
+                              : version == "feedback-minimal-3" ? "urn:thisbit:feedback-minimal:3"
                                                                 : FeedbackSchemaId;
         if (!previous && version != "feedback-minimal-3" && version != FeedbackSchemaVersion)
             fail(tr("不支持这个反馈版本"));
@@ -1389,9 +1389,7 @@ static void feedbackFields(const QJsonObject &feedback) {
             fail(tr("反馈元数据格式不正确"));
         const auto tool = feedback["tool"].toObject();
         exactKeys(tool, {"name", "version"});
-        // Feedback written before the Thisbit rename says "EditHere"; the reader has to keep
-        // accepting it, because promising to read old data predates the brand change.
-        if ((tool["name"] != "Thisbit" && tool["name"] != "EditHere") || !tool["version"].isString() ||
+        if (tool["name"] != "Thisbit" || !tool["version"].isString() ||
             tool["version"].toString().trimmed().isEmpty() || tool["version"].toString().size() > 100)
             fail(tr("反馈工具信息不正确"));
         const auto exportedAt = feedback["exportedAt"].toString();
@@ -1896,7 +1894,7 @@ Document loadDocument(const QString &path) {
     }
     const bool current = version == "3.0.0";
     if (!QStringList{"1.0.0", "1.1.0", "2.0.0", "3.0.0"}.contains(version) ||
-        (root["tool"] != "Thisbit" && root["tool"] != "EditHere"))
+        root["tool"] != "Thisbit")
         fail(tr("不支持这个项目版本"));
     QStringList fields{"schemaVersion", "tool", "exportedAt", "capture", "annotations"};
     if (version == "2.0.0" || current)

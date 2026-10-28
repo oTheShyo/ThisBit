@@ -54,7 +54,7 @@ function validateSchema(value, schemaPath) {
   function check(v, s, file, location = '$') {
     if (s.$ref) {
       const [relative, pointer = ''] = s.$ref.split('#');
-      const urn=/^urn:edithere:feedback-minimal:(\d+)$/.exec(relative);
+      const urn=/^urn:thisbit:feedback-minimal:(\d+)$/.exec(relative);
       const targetFile = urn ? path.join(root,'schema',`feedback-minimal-v${urn[1]}.schema.json`) : relative ? path.resolve(path.dirname(file), relative) : file;
       let target = read(targetFile);
       for (const part of pointer.split('/').slice(1)) target = target[part.replace(/~1/g, '/').replace(/~0/g, '~')];

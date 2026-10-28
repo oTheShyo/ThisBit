@@ -227,8 +227,8 @@ const MAX_VIDEO_SUMMARY_CHARS = 100000;
 const MAX_VIDEO_RESULT_IMAGES = 8;
 const MAX_VIDEO_RESULT_IMAGE_CHARS = 24 * 1024 * 1024;
 const IMAGE_FEEDBACK_VERSION = 'feedback-minimal-4';
-const IMAGE_FEEDBACK_SCHEMA = 'urn:edithere:feedback-minimal:4';
-const IMAGE_FEEDBACK_SCHEMAS = {'feedback-minimal-2':'urn:edithere:feedback-minimal:2','feedback-minimal-3':'urn:edithere:feedback-minimal:3',[IMAGE_FEEDBACK_VERSION]:IMAGE_FEEDBACK_SCHEMA};
+const IMAGE_FEEDBACK_SCHEMA = 'urn:thisbit:feedback-minimal:4';
+const IMAGE_FEEDBACK_SCHEMAS = {'feedback-minimal-2':'urn:thisbit:feedback-minimal:2','feedback-minimal-3':'urn:thisbit:feedback-minimal:3',[IMAGE_FEEDBACK_VERSION]:IMAGE_FEEDBACK_SCHEMA};
 const isTypedImageVersion = version => version==='feedback-minimal-3'||version===IMAGE_FEEDBACK_VERSION;
 
 // One traversal supplies validation, root video indexing and visible summaries.
@@ -267,7 +267,7 @@ function validateImageFeedbackMetadata(feedback) {
       feedback.$schema !== IMAGE_FEEDBACK_SCHEMAS[feedback.schemaVersion]) {
     throw new Error(`图片反馈的 $schema 必须是 ${IMAGE_FEEDBACK_SCHEMA}。`);
   }
-  if (!isRecord(feedback.tool) || (feedback.tool.name !== 'Thisbit' && feedback.tool.name !== 'EditHere')
+  if (!isRecord(feedback.tool) || feedback.tool.name !== 'Thisbit'
       || typeof feedback.tool.version !== 'string' || !feedback.tool.version.trim()
       || feedback.tool.version.length > 100
       || Object.keys(feedback.tool).some((key) => !['name', 'version'].includes(key))) {

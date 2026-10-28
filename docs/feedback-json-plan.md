@@ -60,7 +60,7 @@ J01/J04/J05 原始阶段代码与提交：[GitHub 分支](https://github.com/Ing
 
 ## 命名约定
 
-- 新导出格式命名为 `feedback-minimal-3`，Schema 文件为 `schema/feedback-minimal-v3.schema.json`，`$id` 为 `urn:edithere:feedback-minimal:3`；`feedback-minimal-2`、无版本对象格式和旧并行数组继续可读。
+- 新导出格式命名为 `feedback-minimal-3`，Schema 文件为 `schema/feedback-minimal-v3.schema.json`，`$id` 为 `urn:thisbit:feedback-minimal:3`；`feedback-minimal-2`、无版本对象格式和旧并行数组继续可读。
 - 不使用 `feedback-2` / `feedback-v2`：仓库中的 `feedback-v2.schema.json` 是早期**项目文档**格式，重名会混淆。
 - 当前没有版本号的对象格式追认为 `feedback-minimal-1`；更早的 `annotations` + `changes` 并行数组仍称「旧格式」。
 
@@ -70,7 +70,7 @@ J01/J04/J05 原始阶段代码与提交：[GitHub 分支](https://github.com/Ing
 
 ### J01 版本号与工具标识 · P0
 
-实施说明：已落地。当前导出只保留 `schemaVersion: "feedback-minimal-3"`，省略重复的根级 `$schema`；旧文件里的 `$schema` 仍可读取，本地 Schema 保留稳定标识 `urn:edithere:feedback-minimal:3`。工具版本来自实际构建。视频容器版本保持不变，帧内图片反馈支持新格式。以下方案示例中的旧元数据仅用于说明演进过程；实际导出仅在有位移或缩放时写入单个 `movement`，不再输出 `result` 或 `movements`，读取兼容旧字段。
+实施说明：已落地。当前导出只保留 `schemaVersion: "feedback-minimal-3"`，省略重复的根级 `$schema`；旧文件里的 `$schema` 仍可读取，本地 Schema 保留稳定标识 `urn:thisbit:feedback-minimal:3`。工具版本来自实际构建。视频容器版本保持不变，帧内图片反馈支持新格式。以下方案示例中的旧元数据仅用于说明演进过程；实际导出仅在有位移或缩放时写入单个 `movement`，不再输出 `result` 或 `movements`，读取兼容旧字段。
 
 | 项目 | 现在 | 修改后 |
 | --- | --- | --- |
