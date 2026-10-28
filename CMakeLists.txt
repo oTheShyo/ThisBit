@@ -1,0 +1,360 @@
+cmake_minimum_required(VERSION 3.24)
+if(APPLE)
+  set(CMAKE_OSX_DEPLOYMENT_TARGET "14.0" CACHE STRING "Minimum macOS version")
+endif()
+project(Thisbit VERSION 0.12.1 LANGUAGES C CXX)
+set(CMAKE_OBJCXX_STANDARD 20)
+set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_AUTOMOC ON)
+find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Widgets Svg Concurrent Network Test Multimedia MultimediaWidgets)
+qt_standard_project_setup()
+set(CORE app/settings.cpp app/model.cpp app/videoproject.cpp app/detector.cpp app/table_detector.cpp app/layout.cpp app/fonts.cpp)
+set(UI app/agentserver.cpp app/ui.cpp app/i18n.cpp app/canvas.cpp app/editor.cpp app/inlinenoteedit.cpp app/overlay.cpp app/controller.cpp app/explosion.cpp app/settingsdialog.cpp app/updatechecker.cpp app/projectfiles.cpp app/guide.cpp app/autostart.cpp app/ocr.cpp app/capturesession.cpp app/capturetoolbar.cpp app/pinwindow.cpp app/ocrdialog.cpp app/scrollstitch.cpp app/scrollpng.cpp app/scrollcapture.cpp)
+if(WIN32)
+  set(PLATFORM app/platform_win.cpp)
+elseif(APPLE)
+  enable_language(OBJCXX)
+  set(CMAKE_OSX_DEPLOYMENT_TARGET "14.0" CACHE STRING "" FORCE)
+  set(PLATFORM app/platform_mac.mm app/autostart_mac.mm app/ocr_mac.mm)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  find_package(Qt6 REQUIRED COMPONENTS DBus)
+  find_package(X11 REQUIRED)
+  find_package(PkgConfig REQUIRED)
+  pkg_check_modules(ATSPI REQUIRED IMPORTED_TARGET atspi-2 gobject-2.0)
+  pkg_check_modules(PIPEWIRE QUIET IMPORTED_TARGET libpipewire-0.3>=1.0.4)
+  set(PLATFORM app/platform_linux.cpp app/autostart_linux.cpp app/linuxportal.cpp app/accessibility_linux.cpp app/scroll_wayland.cpp)
+else()
+  message(FATAL_ERROR "This release targets Windows, macOS and Linux.")
+endif()
+add_library(h2d_core STATIC ${CORE})
+target_include_directories(h2d_core PUBLIC app)
+target_compile_definitions(h2d_core PUBLIC THISBIT_VERSION="${PROJECT_VERSION}")
+target_link_libraries(h2d_core PUBLIC Qt6::Gui)
+add_library(h2d_agent STATIC app/agentprotocol.cpp app/agentconnection.cpp app/agentlaunch.cpp)
+target_include_directories(h2d_agent PUBLIC app)
+target_link_libraries(h2d_agent PUBLIC Qt6::Core Qt6::Network)
+add_library(h2d_diagnostics STATIC app/diagnostics.cpp)
+target_include_directories(h2d_diagnostics PUBLIC app)
+target_link_libraries(h2d_diagnostics PUBLIC Qt6::Core)
+add_library(thisbit_zlib STATIC third_party/zlib/adler32.c third_party/zlib/crc32.c
+  third_party/zlib/deflate.c third_party/zlib/trees.c third_party/zlib/zutil.c)
+set_target_properties(thisbit_zlib PROPERTIES AUTOMOC OFF POSITION_INDEPENDENT_CODE ON)
+target_include_directories(thisbit_zlib PUBLIC third_party/zlib)
+target_compile_definitions(thisbit_zlib PUBLIC Z_SOLO)
+add_library(h2d_ui STATIC ${UI} ${PLATFORM} app/platform.h app/tesseract.cpp app/videoplayback.cpp)
+target_sources(h2d_ui PRIVATE app/diagnosticspage.cpp)
+target_include_directories(h2d_ui PUBLIC app)
+target_link_libraries(h2d_ui PUBLIC h2d_agent h2d_core Qt6::Widgets Qt6::Svg Qt6::Concurrent Qt6::Network Qt6::Multimedia Qt6::MultimediaWidgets)
+target_link_libraries(h2d_ui PRIVATE thisbit_zlib)
+target_link_libraries(h2d_ui PUBLIC h2d_diagnostics)
+# Desktop and Web consume these same semantic SVGs. They are embedded, so an
+# installed editor has no dependency on the source tree or a running web service.
+file(GLOB UI_ICON_SVGS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/assets/ui-icons/icons/*.svg")
+qt_add_resources(h2d_ui ui_icons
+  PREFIX "/ui-icons"
+  BASE "${CMAKE_CURRENT_SOURCE_DIR}/assets/ui-icons"
+  FILES assets/ui-icons/manifest.json ${UI_ICON_SVGS})
+if(WIN32)
+  target_link_libraries(h2d_ui PRIVATE user32 gdi32 dwmapi ole32 oleaut32 uuid advapi32)
+elseif(APPLE)
+  target_compile_options(h2d_ui PRIVATE $<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>)
+  target_link_libraries(h2d_ui PRIVATE "-framework Cocoa" "-framework ScreenCaptureKit" "-framework ApplicationServices" "-framework Carbon" "-framework ServiceManagement" "-framework Vision")
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_link_libraries(h2d_ui PRIVATE Qt6::DBus X11::X11 X11::Xtst PkgConfig::ATSPI)
+  if(PIPEWIRE_FOUND)
+    target_compile_definitions(h2d_ui PRIVATE THISBIT_HAVE_PIPEWIRE=1)
+    target_link_libraries(h2d_ui PRIVATE PkgConfig::PIPEWIRE)
+    message(STATUS "Wayland long capture: PipeWire enabled")
+  else()
+    message(STATUS "Wayland long capture unavailable: PipeWire development files not found; ordinary portal screenshots remain available")
+  endif()
+endif()
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  include(GNUInstallDirs)
+  install(FILES packaging/linux/com.thisbit.capture.desktop DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+  install(FILES packaging/linux/com.thisbit.capture.xml DESTINATION ${CMAKE_INSTALL_DATADIR}/mime/packages)
+  install(FILES assets/icons/thisbit-256.png DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/256x256/apps RENAME thisbit.png)
+  install(FILES LICENSE packaging/THIRD-PARTY-NOTICES.md DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/thisbit)
+endif()
+qt_add_executable(Thisbit WIN32 MACOSX_BUNDLE app/main.cpp)
+target_link_libraries(Thisbit PRIVATE h2d_ui)
+qt_add_executable(thisbit-cli app/cli.cpp)
+set_target_properties(thisbit-cli PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+target_link_libraries(thisbit-cli PRIVATE h2d_core h2d_agent h2d_diagnostics)
+target_compile_definitions(thisbit-cli PRIVATE THISBIT_VERSION="${PROJECT_VERSION}")
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  install(TARGETS Thisbit thisbit-cli RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+if(APPLE)
+  add_dependencies(Thisbit thisbit-cli)
+  add_custom_command(TARGET Thisbit POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:thisbit-cli>" "$<TARGET_BUNDLE_DIR:Thisbit>/Contents/MacOS/thisbit-cli"
+    VERBATIM)
+endif()
+set(THISBIT_ICON_PNGS)
+foreach(size IN ITEMS 16 20 24 32 48 64 128 256 512)
+  list(APPEND THISBIT_ICON_PNGS "assets/icons/thisbit-${size}.png")
+endforeach()
+qt_add_resources(Thisbit app_icons
+  PREFIX "/icons"
+  BASE "${CMAKE_CURRENT_SOURCE_DIR}/assets/icons"
+  FILES ${THISBIT_ICON_PNGS})
+# The Windows screen reader is driven through a PowerShell bridge, so the script is
+# embedded rather than installed beside the executable: a partially copied
+# installation cannot lose it, and no script file has to be written at run time.
+# scripts/check-packaging.py keeps it ASCII-only, which is what lets the bridge
+# encode it as UTF-16LE without the byte order mark PowerShell would break on.
+# It belongs to the static library so the tests can reach it as well.
+if(WIN32)
+  qt_add_resources(h2d_ui ocr_bridge
+    PREFIX "/ocr"
+    BASE "${CMAKE_CURRENT_SOURCE_DIR}/app"
+    FILES app/ocrbridge.ps1)
+endif()
+# Interface translations. Simplified Chinese is the source language written in the
+# code, so only English needs a .ts. The Linguist tools compile it when they are
+# installed; the minimal Qt used by CI has no Linguist, which is why the compiled
+# .qm is committed under app/translations/built and used as the fallback.
+find_package(Qt6 QUIET COMPONENTS LinguistTools)
+if(Qt6LinguistTools_FOUND)
+  qt_add_translations(Thisbit TS_FILES app/translations/thisbit_en.ts)
+else()
+  message(STATUS "Qt Linguist tools not found; embedding the prebuilt translations.")
+  qt_add_resources(Thisbit app_translations
+    PREFIX "/i18n"
+    BASE "${CMAKE_CURRENT_SOURCE_DIR}/app/translations/built"
+    FILES app/translations/built/thisbit_en.qm)
+endif()
+if(WIN32)
+  enable_language(RC)
+  configure_file(packaging/thisbit.rc.in "${CMAKE_CURRENT_BINARY_DIR}/thisbit.rc" @ONLY)
+  target_sources(Thisbit PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/thisbit.rc")
+elseif(APPLE)
+  target_sources(Thisbit PRIVATE assets/icons/thisbit.icns)
+  set_source_files_properties(assets/icons/thisbit.icns PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+  set_target_properties(Thisbit PROPERTIES MACOSX_BUNDLE_ICON_FILE thisbit.icns)
+endif()
+target_compile_definitions(h2d_ui PUBLIC THISBIT_VERSION="${PROJECT_VERSION}")
+set_target_properties(Thisbit PROPERTIES
+  MACOSX_BUNDLE_GUI_IDENTIFIER "com.thisbit.capture"
+  MACOSX_BUNDLE_BUNDLE_NAME "Thisbit"
+  MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
+  MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
+  MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/packaging/Info.plist")
+# Package the version of the successfully linked executable, not just the latest configuration.
+file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/version-configured.txt" CONTENT "${PROJECT_VERSION}\n")
+add_custom_command(TARGET Thisbit POST_BUILD
+  BYPRODUCTS "${CMAKE_CURRENT_BINARY_DIR}/version.txt"
+  COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+    "${CMAKE_CURRENT_BINARY_DIR}/version-configured.txt" "${CMAKE_CURRENT_BINARY_DIR}/version.txt"
+  VERBATIM)
+enable_testing()
+qt_add_executable(video_project_tests tests/video_project_test.cpp)
+target_link_libraries(video_project_tests PRIVATE h2d_core Qt6::Test)
+add_dependencies(video_project_tests thisbit-cli)
+set_target_properties(video_project_tests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+add_test(NAME video-project COMMAND video_project_tests)
+qt_add_executable(video_ui_tests tests/video_ui_test.cpp)
+target_link_libraries(video_ui_tests PRIVATE h2d_ui Qt6::Test)
+set_target_properties(video_ui_tests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+add_test(NAME video-ui COMMAND video_ui_tests -platform offscreen)
+set_tests_properties(video-ui PROPERTIES TIMEOUT 120)
+find_program(Node_EXECUTABLE NAMES node)
+if(Node_EXECUTABLE)
+  add_test(NAME connector
+    COMMAND "${Node_EXECUTABLE}" --test "${CMAKE_CURRENT_SOURCE_DIR}/tests/connector_test.mjs")
+  set_tests_properties(connector PROPERTIES TIMEOUT 30)
+  # Browser acceptance scripts also end in .test.cjs, but need Playwright and
+  # built HTML. Keep the dependency-free model/session suites in native CTest.
+  set(WEB_TEST_SOURCES
+    agent-session.test.cjs agent-recovery.test.cjs capture.test.cjs
+    feedback-children.test.mjs feedback-v3.test.cjs feedback.test.cjs
+    image-modes.test.cjs install-skill.test.cjs layout.test.cjs movement.test.cjs)
+  list(TRANSFORM WEB_TEST_SOURCES PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/web/tests/")
+  add_test(NAME web COMMAND "${Node_EXECUTABLE}" --test ${WEB_TEST_SOURCES})
+  set_tests_properties(web PROPERTIES TIMEOUT 180)
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/web/mcp/node_modules/@modelcontextprotocol/sdk/package.json")
+    add_test(NAME web-mcp COMMAND "${Node_EXECUTABLE}" --test
+      "${CMAKE_CURRENT_SOURCE_DIR}/web/tests/mcp-server.test.mjs")
+    set_tests_properties(web-mcp PROPERTIES TIMEOUT 60)
+  endif()
+endif()
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  qt_add_executable(linux_platform_tests tests/linux_platform_test.cpp)
+  target_link_libraries(linux_platform_tests PRIVATE h2d_ui Qt6::Test Qt6::DBus X11::Xtst)
+  add_test(NAME linux-platform COMMAND linux_platform_tests -platform offscreen)
+  qt_add_executable(scroll_wayland_tests tests/scroll_wayland_test.cpp)
+  target_link_libraries(scroll_wayland_tests PRIVATE h2d_ui Qt6::Test Qt6::DBus)
+  add_test(NAME scroll-wayland COMMAND scroll_wayland_tests -platform offscreen)
+endif()
+qt_add_executable(agent_cli_tests tests/agent_cli_test.cpp)
+target_link_libraries(agent_cli_tests PRIVATE h2d_ui Qt6::Test)
+set_target_properties(agent_cli_tests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+# Run the production CLI implementation under Qt's standard-paths test mode,
+# so online tests cannot send requests to a user's installed Thisbit instance.
+qt_add_executable(thisbit-cli-test tests/fixtures/cli_testmode.cpp)
+set_target_properties(thisbit-cli-test PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+target_link_libraries(thisbit-cli-test PRIVATE h2d_core h2d_agent h2d_diagnostics)
+target_compile_definitions(thisbit-cli-test PRIVATE THISBIT_VERSION="${PROJECT_VERSION}")
+add_dependencies(agent_cli_tests thisbit-cli thisbit-cli-test)
+add_test(NAME agent-cli COMMAND agent_cli_tests -platform offscreen)
+if(WIN32)
+  qt_add_executable(agent_launch_tests tests/agent_launch_test.cpp)
+  target_link_libraries(agent_launch_tests PRIVATE h2d_agent Qt6::Test)
+  set_target_properties(agent_launch_tests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+  add_test(NAME agent-launch COMMAND agent_launch_tests)
+  set_tests_properties(agent-launch PROPERTIES TIMEOUT 45)
+endif()
+qt_add_executable(detector_tests tests/detector_test.cpp)
+target_link_libraries(detector_tests PRIVATE h2d_core Qt6::Test)
+add_test(NAME detector COMMAND detector_tests)
+qt_add_executable(core_tests tests/core_test.cpp)
+target_link_libraries(core_tests PRIVATE h2d_core Qt6::Test)
+qt_add_resources(core_tests core_contract_fixtures
+  PREFIX "/fixtures"
+  BASE "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures"
+  FILES tests/fixtures/child-feedback-contract.json tests/fixtures/desktop-review.json)
+add_test(NAME core COMMAND core_tests)
+qt_add_executable(layout_tests tests/layout_test.cpp)
+target_link_libraries(layout_tests PRIVATE h2d_core Qt6::Test)
+add_test(NAME layout COMMAND layout_tests)
+qt_add_executable(ui_tests tests/ui_test.cpp)
+target_link_libraries(ui_tests PRIVATE h2d_ui Qt6::Test)
+add_test(NAME ui COMMAND ui_tests -platform offscreen)
+qt_add_executable(inline_note_tests tests/inlinenoteedit_test.cpp)
+target_link_libraries(inline_note_tests PRIVATE h2d_ui Qt6::Test)
+add_test(NAME inline-note COMMAND inline_note_tests -platform offscreen)
+qt_add_executable(canvas_feedback_tests tests/canvas_feedback_test.cpp)
+target_link_libraries(canvas_feedback_tests PRIVATE h2d_ui Qt6::Test)
+add_test(NAME canvas-feedback COMMAND canvas_feedback_tests -platform offscreen)
+qt_add_executable(settings_tests tests/settings_test.cpp)
+target_link_libraries(settings_tests PRIVATE h2d_ui Qt6::Test)
+add_test(NAME settings COMMAND settings_tests -platform offscreen)
+qt_add_executable(diagnostics_tests tests/diagnostics_test.cpp)
+target_link_libraries(diagnostics_tests PRIVATE h2d_diagnostics Qt6::Test)
+set_target_properties(diagnostics_tests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+add_test(NAME diagnostics COMMAND diagnostics_tests)
+qt_add_executable(i18n_tests tests/i18n_test.cpp)
+target_link_libraries(i18n_tests PRIVATE h2d_ui Qt6::Test)
+# installLanguage() resolves ":/i18n/thisbit_en.qm", which the application embeds. The
+# test embeds the same committed file so it exercises that lookup instead of a path.
+qt_add_resources(i18n_tests i18n_test_translations
+  PREFIX "/i18n"
+  BASE "${CMAKE_CURRENT_SOURCE_DIR}/app/translations/built"
+  FILES app/translations/built/thisbit_en.qm)
+add_test(NAME i18n COMMAND i18n_tests -platform offscreen)
+qt_add_executable(guide_tests tests/guide_test.cpp)
+target_link_libraries(guide_tests PRIVATE h2d_ui Qt6::Test)
+add_test(NAME guide COMMAND guide_tests -platform offscreen)
+qt_add_executable(autostart_tests tests/autostart_test.cpp)
+target_link_libraries(autostart_tests PRIVATE h2d_ui Qt6::Test)
+add_test(NAME autostart COMMAND autostart_tests)
+qt_add_executable(startup_flow_tests tests/startup_flow_test.cpp)
+target_link_libraries(startup_flow_tests PRIVATE h2d_ui Qt6::Test)
+add_test(NAME startup-flow COMMAND startup_flow_tests -platform offscreen)
+qt_add_executable(update_tests tests/update_test.cpp)
+target_link_libraries(update_tests PRIVATE h2d_ui Qt6::Test)
+add_test(NAME updates COMMAND update_tests)
+qt_add_executable(ocr_tests tests/ocr_test.cpp)
+target_link_libraries(ocr_tests PRIVATE h2d_ui Qt6::Test)
+qt_add_resources(ocr_tests small_ocr_fixture
+  PREFIX "/ocr-tests"
+  BASE "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures"
+  FILES tests/fixtures/ocr-small-url.png)
+add_test(NAME ocr COMMAND ocr_tests -platform offscreen)
+qt_add_executable(capture_tests tests/capture_test.cpp)
+target_link_libraries(capture_tests PRIVATE h2d_ui Qt6::Test)
+add_test(NAME capture COMMAND capture_tests -platform offscreen)
+qt_add_executable(scrollstitch_tests tests/scrollstitch_test.cpp)
+target_link_libraries(scrollstitch_tests PRIVATE h2d_ui Qt6::Test)
+add_test(NAME scrollstitch COMMAND scrollstitch_tests -platform offscreen)
+qt_add_executable(scroll_controller_tests tests/scroll_controller_test.cpp)
+target_link_libraries(scroll_controller_tests PRIVATE h2d_ui Qt6::Test)
+set_target_properties(scrollstitch_tests scroll_controller_tests PROPERTIES
+  WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+add_test(NAME scroll-controller COMMAND scroll_controller_tests -platform offscreen)
+set_tests_properties(scrollstitch scroll-controller PROPERTIES TIMEOUT 60)
+# Records the README's animated demonstrations from the real widgets; see
+# tools/readme-demo/render.py. Off by default: it is a documentation tool.
+option(THISBIT_README_RECORDER "Build the README demonstration recorder" OFF)
+if(THISBIT_README_RECORDER)
+  qt_add_executable(readme_recorder tools/readme-demo/recorder.cpp)
+  target_link_libraries(readme_recorder PRIVATE h2d_ui Qt6::Test)
+  set_target_properties(readme_recorder PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+  qt_add_resources(readme_recorder readme_recorder_translations
+    PREFIX "/i18n"
+    BASE "${CMAKE_CURRENT_SOURCE_DIR}/app/translations/built"
+    FILES app/translations/built/thisbit_en.qm)
+endif()
+qt_add_executable(icon_gallery tests/icon_gallery.cpp)
+target_link_libraries(icon_gallery PRIVATE h2d_ui)
+set_target_properties(icon_gallery PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+qt_add_executable(shared_icon_tests tests/shared_icons_test.cpp)
+target_link_libraries(shared_icon_tests PRIVATE h2d_ui Qt6::Test)
+set_target_properties(shared_icon_tests PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+add_test(NAME shared-icons COMMAND shared_icon_tests -platform offscreen)
+if(WIN32)
+  set_target_properties(settings_tests PROPERTIES WIN32_EXECUTABLE FALSE)
+  set_target_properties(i18n_tests PROPERTIES WIN32_EXECUTABLE FALSE)
+  qt_add_executable(platform_tests tests/platform_test.cpp)
+  target_link_libraries(platform_tests PRIVATE h2d_ui Qt6::Test)
+  set_target_properties(core_tests ui_tests layout_tests platform_tests PROPERTIES WIN32_EXECUTABLE FALSE)
+  add_dependencies(platform_tests Thisbit)
+  add_test(NAME windows-platform COMMAND platform_tests -platform windows)
+  qt_add_executable(scroll_platform_tests tests/scroll_platform_test.cpp)
+  target_link_libraries(scroll_platform_tests PRIVATE h2d_ui Qt6::Test)
+  add_dependencies(scroll_controller_tests scroll_platform_tests)
+  set_target_properties(scroll_platform_tests PROPERTIES WIN32_EXECUTABLE FALSE)
+  add_test(NAME scroll-platform COMMAND scroll_platform_tests -platform windows)
+  set_tests_properties(scroll-platform PROPERTIES TIMEOUT 45)
+endif()
+# Guards for the incidents recorded in docs/REGRESSIONS.md: installer encoding, NSIS
+# macros, the shape of the portable archive, release asset names and hashes, the
+# version living in one place, and the committed translations matching their sources.
+# check-translations.py needs lupdate, which the minimal Qt used by CI does not ship;
+# the tool-independent half of the translation check lives in check-packaging.py.
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+  if(WIN32)
+    add_executable(update_installer_stub WIN32 tests/fixtures/update_stub.cpp)
+    set_target_properties(update_installer_stub PROPERTIES AUTOMOC OFF AUTOUIC OFF)
+    add_test(NAME installer-maintenance
+      COMMAND "${CMAKE_COMMAND}" -E env
+        "THISBIT_UPDATE_STUB=$<TARGET_FILE:update_installer_stub>"
+        "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/maintenance_test.py")
+    set_tests_properties(installer-maintenance PROPERTIES TIMEOUT 240)
+    find_program(NSIS_EXECUTABLE makensis HINTS "C:/Program Files (x86)/NSIS" "C:/Program Files/NSIS")
+    if(NSIS_EXECUTABLE)
+      add_test(NAME installer-transaction
+        COMMAND "${CMAKE_COMMAND}" -E env "NSIS_MAKENSIS=${NSIS_EXECUTABLE}"
+          "THISBIT_UPDATE_STUB=$<TARGET_FILE:update_installer_stub>"
+          "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/installer_transaction_test.py")
+      set_tests_properties(installer-transaction PROPERTIES TIMEOUT 150)
+      add_test(NAME installer-shell-notification
+        COMMAND "${CMAKE_COMMAND}" -E env "NSIS_MAKENSIS=${NSIS_EXECUTABLE}"
+          "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/installer_shell_notification_test.py")
+      set_tests_properties(installer-shell-notification PROPERTIES TIMEOUT 60)
+      add_test(NAME installer-ui-flow
+        COMMAND "${CMAKE_COMMAND}" -E env "NSIS_MAKENSIS=${NSIS_EXECUTABLE}"
+          "THISBIT_UPDATE_STUB=$<TARGET_FILE:update_installer_stub>"
+          "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/installer_ui_flow_test.py")
+      set_tests_properties(installer-ui-flow PROPERTIES TIMEOUT 180)
+    endif()
+  endif()
+  add_test(NAME packaging
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check-packaging.py")
+  if(TARGET Qt6::lupdate)
+    add_test(NAME translations
+      COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check-translations.py"
+              --lupdate "$<TARGET_FILE:Qt6::lupdate>")
+  else()
+    message(STATUS "Qt Linguist tools not found; the translations test is not registered.")
+  endif()
+else()
+  message(STATUS "Python 3 not found; the packaging and translations tests are not registered.")
+endif()
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  install(TARGETS Thisbit thisbit-cli BUNDLE DESTINATION . RUNTIME DESTINATION .)
+endif()

@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "thisbit-web": {
+      "command": "node",
+      "args": ["/ABSOLUTE/PATH/TO/Thisbit/web/mcp/server.bundle.cjs"]
+    }
+  }
+}

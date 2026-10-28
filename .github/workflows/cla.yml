@@ -1,0 +1,33 @@
+name: CLA Assistant
+
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+  issue_comment:
+    types: [created, edited]
+
+# Execute trusted base-repository code, never the pull request head.
+permissions:
+  contents: write
+  pull-requests: write
+  statuses: write
+
+jobs:
+  CLAAssistant:
+    if: github.event_name == 'pull_request_target' || github.event.issue.pull_request
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out trusted workflow code
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          # PR events use the base commit; comment events use the default
+          # branch commit. Never replace this with a PR head SHA or ref.
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Check contributor consent
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { run } = require('./scripts/cla-check.cjs');
+            await run({ github, context, core });

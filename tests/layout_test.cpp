@@ -1,0 +1,1196 @@
+#include "feedback_test_helpers.h"
+#include "layout.h"
+#include "model.h"
+#include <QDir>
+#include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QPainter>
+#include <QSet>
+#include <QTemporaryDir>
+#include <QTest>
+#include <cmath>
+#include <stdexcept>
+using namespace h2d;
+namespace {
+Candidate candidate(QRect bounds, const QString &label) {
+    auto target = manualTarget();
+    target["label"] = label;
+    return {bounds, target};
+}
+QVector<Candidate> tableRegions() {
+    return {candidate({10, 10, 30, 20}, "1"), candidate({40, 10, 30, 20}, "2"),
+            candidate({10, 30, 30, 20}, "3"), candidate({40, 30, 30, 20}, "4"),
+            candidate({10, 10, 60, 40}, "1234")};
+}
+QString groupId(const LayoutState &state, const QString &label) {
+    for (const auto &group : state.groups)
+        if (group.label == label)
+            return group.id;
+    return {};
+}
+const LayoutPiece *pieceById(const LayoutState &state, const QString &id) {
+    for (const auto &piece : state.pieces)
+        if (piece.id == id)
+            return &piece;
+    return nullptr;
+}
+QStringList members(const LayoutState &state, const QString &id) {
+    for (const auto &group : state.groups)
+        if (group.id == id)
+            return group.pieces;
+    return {};
+}
+QImage sourceImage() {
+    QImage image(160, 120, QImage::Format_ARGB32);
+    for (int y = 0; y < image.height(); ++y)
+        for (int x = 0; x < image.width(); ++x)
+            image.setPixelColor(x, y, QColor((x * 13) % 256, (y * 17) % 256, (x + y) % 256));
+    QPainter painter(&image);
+    painter.fillRect(QRect(10, 10, 30, 20), QColor("#f04050"));
+    painter.fillRect(QRect(40, 10, 30, 20), QColor("#20a060"));
+    painter.fillRect(QRect(10, 30, 30, 20), QColor("#3070e0"));
+    painter.fillRect(QRect(40, 30, 30, 20), QColor("#f0b030"));
+    return image;
+}
+bool rejects(const QJsonObject &json, QSize size) {
+    try {
+        importLayout(json, size);
+        return false;
+    } catch (const std::runtime_error &) {
+        return true;
+    }
+}
+QJsonObject changedPiece(QJsonObject result, int index, const QString &field, const QJsonValue &value) {
+    auto pieces = result["pieces"].toArray();
+    auto piece = pieces[index].toObject();
+    piece[field] = value;
+    pieces[index] = piece;
+    result["pieces"] = pieces;
+    return result;
+}
+QPointF oppositeCorner(QRectF r, int handle) {
+    return {(handle == 0 || handle == 6) ? r.right() : r.left(),
+            (handle == 0 || handle == 2) ? r.bottom() : r.top()};
+}
+} // namespace
+class LayoutTests : public QObject {
+    Q_OBJECT
+  private slots:
+    void initialPartitionsPreserveEveryPixel() {
+        const auto original = sourceImage();
+        auto regions = tableRegions();
+        regions.append(candidate({25, 0, 30, 90}, "crossing"));
+        regions.append(regions.first());
+        auto state = createLayout(original.size(), regions);
+        validateLayout(state, original.size());
+        QCOMPARE(state.groups.size(), 7);
+        QVERIFY(state.pieces.size() > 4);
+        QSet<QString> ids;
+        for (const auto &piece : state.pieces) {
+            QVERIFY(!ids.contains(piece.id));
+            ids.insert(piece.id);
+            QCOMPARE(piece.source, piece.destination);
+        }
+        for (int y = 0; y < original.height(); ++y) {
+            for (int x = 0; x < original.width(); ++x) {
+                const QPointF center(x + 0.5, y + 0.5);
+                int covering = 0;
+                for (const auto &piece : state.pieces)
+                    covering += piece.source.contains(center) ? 1 : 0;
+                QCOMPARE(covering, 1);
+            }
+        }
+        QCOMPARE(renderLayout(original, state).convertToFormat(QImage::Format_ARGB32), original);
+        auto empty = createLayout(original.size(), {});
+        QCOMPARE(empty.pieces.size(), 1);
+        QCOMPARE(empty.groups.size(), 1);
+        QCOMPARE(renderLayout(original, empty).convertToFormat(QImage::Format_ARGB32), original);
+    }
+    void movingARegionLeavesAnEmptyHole() {
+        const auto original = sourceImage();
+        auto state = createLayout(original.size(), tableRegions());
+        const auto id = groupId(state, "1");
+        QVERIFY(!id.isEmpty());
+        const auto before = state.pieces;
+        transformLayoutGroup(state, id, {90, 70, 30, 20});
+        QCOMPARE(layoutBounds(state, id), QRectF(90, 70, 30, 20));
+        validateLayout(state, original.size());
+        for (const auto &piece : before) {
+            const auto *after = pieceById(state, piece.id);
+            QVERIFY(after);
+            QCOMPARE(after->source, piece.source);
+        }
+        const auto rendered = renderLayout(original, state);
+        QCOMPARE(rendered.pixelColor(20, 20).alpha(), 0);
+        QCOMPARE(rendered.pixelColor(100, 80), QColor("#f04050"));
+        QCOMPARE(rendered.pixelColor(50, 20), original.pixelColor(50, 20));
+        QCOMPARE(rendered.pixelColor(5, 5), original.pixelColor(5, 5));
+    }
+    void transformingAParentPreservesChildRelationships() {
+        auto state = createLayout({160, 120}, tableRegions());
+        const auto parentId = groupId(state, "1234");
+        const auto before = state;
+        const auto parentMembers = members(state, parentId);
+        const QRectF oldBounds(10, 10, 60, 40), newBounds(50, 50, 90, 60);
+        transformLayoutGroup(state, parentId, newBounds);
+        QCOMPARE(layoutBounds(state, parentId), newBounds);
+        QCOMPARE(layoutBounds(state, groupId(state, "1")), QRectF(50, 50, 45, 30));
+        QCOMPARE(layoutBounds(state, groupId(state, "2")), QRectF(95, 50, 45, 30));
+        QCOMPARE(layoutBounds(state, groupId(state, "3")), QRectF(50, 80, 45, 30));
+        QCOMPARE(layoutBounds(state, groupId(state, "4")), QRectF(95, 80, 45, 30));
+        for (const auto &piece : before.pieces) {
+            const auto *after = pieceById(state, piece.id);
+            QVERIFY(after);
+            QCOMPARE(after->source, piece.source);
+            if (!parentMembers.contains(piece.id)) {
+                QCOMPARE(after->destination, piece.destination);
+                continue;
+            }
+            QCOMPARE(after->destination.topLeft(),
+                     newBounds.topLeft() + (piece.destination.topLeft() - oldBounds.topLeft()) * 1.5);
+            QCOMPARE(after->destination.size(), piece.destination.size() * 1.5);
+        }
+        validateLayout(state, {160, 120});
+    }
+    void trajectoriesTrackSelectedGroupsInsteadOfNestedPixelPartitions() {
+        auto state = createLayout({160, 120}, tableRegions());
+        const auto parent = groupId(state, "1234"), child = groupId(state, "1");
+        QVERIFY(state.movements.has_value());
+        QVERIFY(layoutMovements(state).isEmpty());
+        const auto untouched = state;
+        transformLayoutGroup(state, parent, layoutBounds(state, parent));
+        QVERIFY(state == untouched);
+
+        transformLayoutGroup(state, parent, {50, 50, 90, 60});
+        auto movements = layoutMovements(state);
+        QCOMPARE(movements.size(), 1);
+        QCOMPARE(movements[0].groupId, parent);
+        QCOMPARE(movements[0].source, QRectF(10, 10, 60, 40));
+        QCOMPARE(movements[0].destination, QRectF(50, 50, 90, 60));
+        const auto onlyParent = state;
+
+        transformLayoutGroup(state, child, {10, 70, 45, 30});
+        movements = layoutMovements(state);
+        QCOMPARE(movements.size(), 2);
+        QCOMPARE(movements[0], layoutMovements(onlyParent)[0]);
+        QCOMPARE(movements[1].groupId, child);
+        QCOMPARE(movements[1].source, QRectF(10, 10, 30, 20));
+        QCOMPARE(movements[1].destination, QRectF(10, 70, 45, 30));
+        // Pixel reconstruction needs three disjoint rectangles for the L-shaped
+        // parent remainder. The visual history still describes two user edits.
+        QCOMPARE(exportLayoutChanges(state).size(), 3);
+        QCOMPARE(renderLayout(sourceImage(), importLayoutChanges(exportLayoutChanges(state), state.canvas)),
+                 renderLayout(sourceImage(), state));
+        QVERIFY(importLayout(exportLayout(state), state.canvas) == state);
+        state = onlyParent; // The same value snapshots back undo / redo in the editor.
+        QCOMPARE(layoutMovements(state).size(), 1);
+        state = untouched;
+        QVERIFY(layoutMovements(state).isEmpty());
+    }
+    void movedChildStaysIndependentOfLaterParentTransforms() {
+        auto state = createLayout({160, 120}, tableRegions());
+        const auto parent = groupId(state, "1234"), child = groupId(state, "1");
+        transformLayoutGroup(state, parent, {50, 50, 90, 60});
+        transformLayoutGroup(state, child, {10, 70, 45, 30});
+        // B1 修复：子组件移动后，其切片从父组件中移除，父组件的边界
+        // 不再包含子组件的移动区域，仅保留父组件自身的 L 形剩余部分。
+        QCOMPARE(layoutBounds(state, parent), QRectF(50, 50, 90, 60));
+        auto scaled = state;
+        transformLayoutGroup(scaled, parent, {20, 20, 65, 30});
+        QCOMPARE(layoutMovements(scaled).size(), 2);
+        // 父组件按自身边界变换，目标从 (50,50,90x60) 映射到 (20,20,65x30)。
+        QCOMPARE(layoutMovements(scaled)[0].destination, QRectF(20, 20, 65, 30));
+        // 子组件已脱离父组件，后续父组件变换不再更新子组件的轨迹。
+        QCOMPARE(layoutMovements(scaled)[1].destination, QRectF(10, 70, 45, 30));
+        QCOMPARE(layoutMovements(scaled)[1].destination, layoutBounds(scaled, child));
+        QVERIFY(importLayout(exportLayout(scaled), scaled.canvas) == scaled);
+        transformLayoutGroup(state, parent, {20, 30, 130, 60});
+        auto movements = layoutMovements(state);
+        QCOMPARE(movements.size(), 2);
+        // 父组件保留自身框架，子组件轨迹不被后续父组件变换更新。
+        QCOMPARE(movements[0].source, QRectF(10, 10, 60, 40));
+        QCOMPARE(movements[0].destination, QRectF(20, 30, 130, 60));
+        QCOMPARE(movements[1].source, QRectF(10, 10, 30, 20));
+        QCOMPARE(movements[1].destination, QRectF(10, 70, 45, 30));
+        transformLayoutGroup(state, child, {20, 70, 45, 30});
+        movements = layoutMovements(state);
+        QCOMPARE(movements.size(), 2);
+        QCOMPARE(movements[0].destination, QRectF(20, 30, 130, 60));
+        QCOMPARE(movements[1].destination, QRectF(20, 70, 45, 30));
+        const auto beforeNoOp = state;
+        transformLayoutGroup(state, child, layoutBounds(state, child));
+        transformLayoutGroup(state, "missing-group", {0, 0, 10, 10});
+        QVERIFY(state == beforeNoOp);
+        transformLayoutGroup(state, child, {10, 10, 30, 20});
+        QCOMPARE(layoutMovements(state).size(), 2);
+        QCOMPARE(layoutMovements(state)[1].source, layoutMovements(state)[1].destination);
+        QVERIFY(importLayout(exportLayout(state), state.canvas) == state);
+        validateLayout(state, state.canvas);
+    }
+    void manualCutsKeepExistingTrajectoriesAndUseOriginalPixelBounds() {
+        auto state = createLayout({160, 120}, tableRegions());
+        const auto parent = groupId(state, "1234");
+        transformLayoutGroup(state, parent, {30, 30, 60, 40});
+        const auto parentMovement = layoutMovements(state)[0];
+        const auto manual = addLayoutRegion(state, {35, 35, 10, 10}, "移动后细分");
+        QVERIFY(!manual.isEmpty());
+        QCOMPARE(layoutMovements(state).size(), 1);
+        QCOMPARE(layoutMovements(state)[0], parentMovement);
+        transformLayoutGroup(state, manual, {5, 80, 10, 10});
+        QCOMPARE(layoutMovements(state).size(), 2);
+        QCOMPARE(layoutMovements(state)[0], parentMovement);
+        QCOMPARE(layoutMovements(state)[1].source, QRectF(15, 15, 10, 10));
+        QCOMPARE(layoutMovements(state)[1].destination, QRectF(5, 80, 10, 10));
+        QVERIFY(importLayout(exportLayout(state), state.canvas) == state);
+    }
+    void legacyLayoutsRetainTheirChangesWhenTrackingStarts() {
+        auto state = createLayout({160, 120}, tableRegions());
+        const auto parent = groupId(state, "1234"), child = groupId(state, "1");
+        transformLayoutGroup(state, parent, {50, 50, 90, 60});
+        auto legacyJson = exportLayout(state);
+        legacyJson.remove("movements");
+        auto legacy = importLayout(legacyJson, state.canvas);
+        QVERIFY(!legacy.movements);
+        QCOMPARE(layoutMovements(legacy).size(), 1);
+        QCOMPARE(layoutMovements(legacy)[0].groupId, parent);
+        QCOMPARE(exportLayout(legacy), legacyJson);
+        const auto beforeNoOp = legacy;
+        transformLayoutGroup(legacy, parent, layoutBounds(legacy, parent));
+        QVERIFY(legacy == beforeNoOp);
+        transformLayoutGroup(legacy, child, {10, 70, 45, 30});
+        QVERIFY(legacy.movements.has_value());
+        QCOMPARE(layoutMovements(legacy).size(), 2);
+        QCOMPARE(layoutMovements(legacy)[0].source, QRectF(10, 10, 60, 40));
+        QCOMPARE(layoutMovements(legacy)[0].destination, QRectF(50, 50, 90, 60));
+        QCOMPARE(layoutMovements(legacy)[1].source, QRectF(10, 10, 30, 20));
+        QVERIFY(importLayout(exportLayout(legacy), legacy.canvas) == legacy);
+
+        auto feedback = importLayoutChanges(exportLayoutChanges(state), state.canvas);
+        QVERIFY(!feedback.movements);
+        const auto record = layoutMovements(feedback)[0];
+        QVERIFY(!record.groupId.isEmpty());
+        transformLayoutGroup(feedback, record.groupId, {20, 30, 90, 60});
+        QCOMPARE(layoutMovements(feedback).size(), 1);
+        QCOMPARE(layoutMovements(feedback)[0].source, record.source);
+        QCOMPARE(layoutMovements(feedback)[0].destination, QRectF(20, 30, 90, 60));
+    }
+    void trajectoryMetadataRejectsCorruption() {
+        auto state = createLayout({160, 120}, tableRegions());
+        transformLayoutGroup(state, groupId(state, "1234"), {50, 50, 90, 60});
+        const auto valid = exportLayout(state);
+        auto bad = valid;
+        bad["movements"] = QJsonValue(QJsonValue::Null);
+        QVERIFY(rejects(bad, state.canvas));
+        auto movement = valid["movements"].toArray()[0].toObject();
+        bad["movements"] = QJsonArray{movement, movement};
+        QVERIFY(rejects(bad, state.canvas));
+        movement["groupId"] = "missing-group";
+        bad["movements"] = QJsonArray{movement};
+        QVERIFY(rejects(bad, state.canvas));
+        movement = valid["movements"].toArray()[0].toObject();
+        movement["source"] = QJsonObject{{"x1", 10}, {"y1", 10}, {"x2", 20}, {"y2", 20}};
+        bad["movements"] = QJsonArray{movement};
+        QVERIFY(rejects(bad, state.canvas));
+        movement = valid["movements"].toArray()[0].toObject();
+        movement["destination"] = QJsonObject{{"x1", 50}, {"y1", 50}, {"x2", 161}, {"y2", 110}};
+        bad["movements"] = QJsonArray{movement};
+        QVERIFY(rejects(bad, state.canvas));
+        movement = valid["movements"].toArray()[0].toObject();
+        movement["unknown"] = true;
+        bad["movements"] = QJsonArray{movement};
+        QVERIFY(rejects(bad, state.canvas));
+    }
+    void choicesIncludeEveryContainingRegion() {
+        QVector<Candidate> regions{candidate({10, 30, 20, 20}, "3"), candidate({10, 30, 40, 20}, "34"),
+                                   candidate({10, 30, 40, 40}, "3456"), candidate({10, 10, 40, 60}, "123456"),
+                                   candidate({15, 20, 10, 60}, "crossing")};
+        auto state = createLayout({120, 100}, regions);
+        QStringList labels;
+        double previousArea = 0;
+        for (const auto &choice : layoutChoices(state, {20, 40})) {
+            labels.append(choice.label);
+            const auto area = choice.bounds.width() * choice.bounds.height();
+            QVERIFY(area >= previousArea);
+            previousArea = area;
+        }
+        QCOMPARE(labels, QStringList({"3", "crossing", "34", "3456", "123456", "整个图片"}));
+        QVERIFY(layoutChoices(state, {120, 100}).isEmpty());
+        for (const auto &choice : layoutChoices(state, {30, 40}))
+            QVERIFY(choice.label != "3");
+        QVERIFY(!addLayoutRegion(state, {10, 30, 20, 20}, "manual 3").isEmpty());
+        int sameBounds = 0;
+        for (const auto &choice : layoutChoices(state, {20, 40}))
+            sameBounds += choice.bounds == QRectF(10, 30, 20, 20) ? 1 : 0;
+        QCOMPARE(sameBounds, 2);
+    }
+    void cornersKeepTheirAspectRatio_data() {
+        QTest::addColumn<int>("handle");
+        QTest::addColumn<QPointF>("delta");
+        for (int handle : {0, 2, 4, 6})
+            for (auto delta : {QPointF(13, 7), QPointF(-19, 11), QPointF(1000, 1000), QPointF(-1000, -1000),
+                               QPointF(1000, -1000)}) {
+                const auto name = QString("%1-%2-%3").arg(handle).arg(delta.x()).arg(delta.y()).toUtf8();
+                QTest::newRow(name.constData()) << handle << delta;
+            }
+    }
+    void cornersKeepTheirAspectRatio() {
+        QFETCH(int, handle);
+        QFETCH(QPointF, delta);
+        const QRectF before(30, 25, 60, 40);
+        const QSize canvas(160, 120);
+        const auto after = resizeLayoutRect(before, delta, handle, canvas);
+        QVERIFY(after.width() >= 1 - 1e-9 && after.height() >= 1 - 1e-9);
+        QVERIFY(after.left() >= -1e-9 && after.top() >= -1e-9);
+        QVERIFY(after.right() <= canvas.width() + 1e-9 && after.bottom() <= canvas.height() + 1e-9);
+        QVERIFY(std::abs(after.width() / after.height() - 1.5) < 1e-9);
+        QCOMPARE(oppositeCorner(after, handle), oppositeCorner(before, handle));
+    }
+    void edgesOnlyChangeTheirOwnDimension() {
+        const QRectF before(30, 25, 60, 40);
+        const QSize canvas(160, 120);
+        QCOMPARE(resizeLayoutRect(before, {9, 7}, 1, canvas), QRectF(30, 32, 60, 33));
+        QCOMPARE(resizeLayoutRect(before, {9, 7}, 3, canvas), QRectF(30, 25, 69, 40));
+        QCOMPARE(resizeLayoutRect(before, {9, 7}, 5, canvas), QRectF(30, 25, 60, 47));
+        QCOMPARE(resizeLayoutRect(before, {9, 7}, 7, canvas), QRectF(39, 25, 51, 40));
+        for (int handle : {1, 3, 5, 7})
+            for (auto delta : {QPointF(1000, 1000), QPointF(-1000, -1000)}) {
+                const auto after = resizeLayoutRect(before, delta, handle, canvas);
+                QVERIFY(after.width() >= 1 && after.height() >= 1);
+                QVERIFY(QRectF(QPointF(0, 0), canvas).contains(after));
+                if (handle == 1 || handle == 5) {
+                    QCOMPARE(after.x(), before.x());
+                    QCOMPARE(after.width(), before.width());
+                    QCOMPARE(handle == 1 ? after.bottom() : after.top(),
+                             handle == 1 ? before.bottom() : before.top());
+                } else {
+                    QCOMPARE(after.y(), before.y());
+                    QCOMPARE(after.height(), before.height());
+                    QCOMPARE(handle == 7 ? after.right() : after.left(),
+                             handle == 7 ? before.right() : before.left());
+                }
+            }
+    }
+    void wheelScalePreservesRatioAndStaysOnCanvas() {
+        const QRectF before(120, 90, 30, 20);
+        const QSize canvas(160, 120);
+        for (double factor : {0.01, 0.5, 1.25, 1000.0}) {
+            const auto after = scaleLayoutRect(before, factor, canvas);
+            QVERIFY(after.width() >= 1 - 1e-9 && after.height() >= 1 - 1e-9);
+            QVERIFY(QRectF(QPointF(0, 0), canvas).contains(after));
+            QVERIFY(std::abs(after.width() / after.height() - 1.5) < 1e-9);
+        }
+        const auto scaled = scaleLayoutRect({30, 30, 30, 20}, 1.25, canvas);
+        QCOMPARE(scaled.center(), QPointF(45, 40));
+        QCOMPARE(scaled.size(), QSizeF(37.5, 25));
+    }
+    void subpixelChildrenKeepSizeWhenMovedOrResized() {
+        auto state = createLayout({160, 120}, tableRegions());
+        transformLayoutGroup(state, groupId(state, "1234"), {159, 118.5, 1, 1.5});
+        const auto childId = groupId(state, "4");
+        const auto original = layoutBounds(state, childId);
+        QCOMPARE(original, QRectF(159.5, 119.25, 0.5, 0.75));
+        auto moved = original.translated(-10, -10);
+        transformLayoutGroup(state, childId, moved);
+        QCOMPARE(layoutBounds(state, childId), moved);
+        QCOMPARE(constrainLayoutRect(moved, state.canvas), moved);
+
+        const auto resized = resizeLayoutRect(moved, {-0.1, -0.15}, 0, state.canvas);
+        QVERIFY(resized.width() > moved.width() && resized.width() < 1);
+        QVERIFY(std::abs(resized.width() / resized.height() - 2.0 / 3.0) < 1e-9);
+        transformLayoutGroup(state, childId, resized);
+        QCOMPARE(layoutBounds(state, childId), resized);
+        validateLayout(state, state.canvas);
+        QVERIFY(importLayout(exportLayout(state), state.canvas) == state);
+    }
+
+    void subpixelHandlesNeverJumpOrInvertAtCanvasEdges() {
+        const QSize canvas(160, 120);
+        const QRectF full(QPointF(0, 0), canvas);
+        for (const auto &before : {QRectF(0, 0, 0.4, 0.7), QRectF(159.6, 0, 0.4, 0.7),
+                                   QRectF(0, 119.3, 0.4, 0.7), QRectF(159.6, 119.3, 0.4, 0.7)}) {
+            for (int handle = 0; handle < 8; ++handle) {
+                QCOMPARE(resizeLayoutRect(before, {}, handle, canvas), before);
+                for (const auto &delta : {QPointF(1000, 1000), QPointF(-1000, -1000), QPointF(1000, -1000),
+                                          QPointF(-1000, 1000)}) {
+                    const auto after = resizeLayoutRect(before, delta, handle, canvas);
+                    QVERIFY(after.width() > 0 && after.height() > 0);
+                    QVERIFY(after.left() >= -1e-9 && after.top() >= -1e-9);
+                    QVERIFY(after.right() <= full.right() + 1e-9 && after.bottom() <= full.bottom() + 1e-9);
+                    QCOMPARE(constrainLayoutRect(after, canvas), after);
+                    if (handle % 2 == 0) {
+                        QVERIFY(std::abs(after.width() / after.height() - before.width() / before.height()) <
+                                1e-9);
+                        QCOMPARE(oppositeCorner(after, handle), oppositeCorner(before, handle));
+                    } else if (handle == 1 || handle == 5) {
+                        QCOMPARE(after.x(), before.x());
+                        QCOMPARE(after.width(), before.width());
+                    } else {
+                        QCOMPARE(after.y(), before.y());
+                        QCOMPARE(after.height(), before.height());
+                    }
+                }
+            }
+            QCOMPARE(scaleLayoutRect(before, 1, canvas), before);
+            const auto grown = scaleLayoutRect(before, 1.1, canvas);
+            QVERIFY(std::abs(grown.width() / before.width() - 1.1) < 1e-9);
+            QVERIFY(std::abs(grown.height() / before.height() - 1.1) < 1e-9);
+        }
+    }
+
+    void manualCutAfterMoveAndScalePreservesExistingGroups() {
+        const auto original = sourceImage();
+        auto state = createLayout(original.size(), tableRegions());
+        const auto cellId = groupId(state, "1"), parentId = groupId(state, "1234");
+        transformLayoutGroup(state, cellId, {80, 60, 60, 40});
+        const auto beforeCut = renderLayout(original, state);
+        const auto countBefore = members(state, cellId).size();
+        const auto manualId = addLayoutRegion(state, {90, 70, 20, 20}, "精细切片");
+        QVERIFY(!manualId.isEmpty());
+        QCOMPARE(layoutBounds(state, manualId), QRectF(90, 70, 20, 20));
+        QCOMPARE(layoutBounds(state, cellId), QRectF(80, 60, 60, 40));
+        QVERIFY(members(state, cellId).size() > countBefore);
+        QCOMPARE(renderLayout(original, state), beforeCut);
+        const auto parentMembers = members(state, parentId), manualMembers = members(state, manualId);
+        bool foundMappedPart = false;
+        for (const auto &id : members(state, cellId)) {
+            // B1 修复：子组件移动后，其切片从父组件中移除，
+            // 父组件不再包含子组件的切片。
+            QVERIFY(!parentMembers.contains(id));
+            const auto *piece = pieceById(state, id);
+            QVERIFY(piece);
+            if (manualMembers.contains(id)) {
+                QCOMPARE(piece->source, QRectF(15, 15, 10, 10));
+                QCOMPARE(piece->destination, QRectF(90, 70, 20, 20));
+                foundMappedPart = true;
+            }
+        }
+        QVERIFY(foundMappedPart);
+        transformLayoutGroup(state, manualId, {5, 80, 20, 20});
+        auto rendered = renderLayout(original, state);
+        QCOMPARE(rendered.pixelColor(15, 90), QColor("#f04050"));
+        QCOMPARE(rendered.pixelColor(100, 80).alpha(), 0);
+        validateLayout(state, original.size());
+    }
+    void layoutJsonRoundTripRejectsCorruption() {
+        auto state = createLayout({160, 120}, tableRegions());
+        transformLayoutGroup(state, groupId(state, "1"), {85.5, 60.25, 60.5, 40.25});
+        QVERIFY(!addLayoutRegion(state, {90.25, 70.5, 20.5, 15.25}, "fractional").isEmpty());
+        const auto valid = exportLayout(state);
+        const auto decoded = QJsonDocument::fromJson(QJsonDocument(valid).toJson()).object();
+        QVERIFY(importLayout(decoded, state.canvas) == state);
+        auto pieces = valid["pieces"].toArray();
+        QVERIFY(pieces.size() >= 2);
+        QVERIFY(rejects(changedPiece(valid, 1, "source", pieces[0].toObject()["source"]), state.canvas));
+        QVERIFY(rejects(changedPiece(valid, 1, "id", pieces[0].toObject()["id"]), state.canvas));
+        auto destination = pieces[0].toObject()["destination"].toObject();
+        destination["x2"] = state.canvas.width() + 1;
+        QVERIFY(rejects(changedPiece(valid, 0, "destination", destination), state.canvas));
+        auto source = pieces[0].toObject()["source"].toObject();
+        source["x1"] = -1;
+        QVERIFY(rejects(changedPiece(valid, 0, "source", source), state.canvas));
+        source = pieces[0].toObject()["source"].toObject();
+        source["x2"] = source["x1"];
+        QVERIFY(rejects(changedPiece(valid, 0, "source", source), state.canvas));
+        source = pieces[0].toObject()["source"].toObject();
+        source["x1"] = "0";
+        QVERIFY(rejects(changedPiece(valid, 0, "source", source), state.canvas));
+        for (auto references : {QJsonArray{"nonexistent"},
+                                QJsonArray{pieces[0].toObject()["id"], pieces[0].toObject()["id"]}}) {
+            auto bad = valid;
+            auto groups = bad["groups"].toArray();
+            auto group = groups[0].toObject();
+            group["pieceIds"] = references;
+            groups[0] = group;
+            bad["groups"] = groups;
+            QVERIFY(rejects(bad, state.canvas));
+        }
+        auto bad = valid;
+        pieces.removeLast();
+        bad["pieces"] = pieces;
+        QVERIFY(rejects(bad, state.canvas));
+        bad = valid;
+        bad["width"] = 160.5;
+        QVERIFY(rejects(bad, state.canvas));
+        bad = valid;
+        bad["unexpected"] = true;
+        QVERIFY(rejects(bad, state.canvas));
+    }
+    void minimalChangesOnlyKeepActualTransforms() {
+        auto state = createLayout({160, 120}, tableRegions());
+        QVERIFY(exportLayoutChanges(state).isEmpty());
+        const auto cell = groupId(state, "1");
+        transformLayoutGroup(state, cell, {90, 70, 30, 20});
+        auto changes = exportLayoutChanges(state);
+        QCOMPARE(changes.size(), 1);
+        QCOMPARE(changes[0].toObject(),
+                 (QJsonObject{{"from", rectJson({10, 10, 30, 20})}, {"to", rectJson({90, 70, 30, 20})}}));
+        transformLayoutGroup(state, cell, {10, 10, 30, 20});
+        QVERIFY(exportLayoutChanges(state).isEmpty());
+        QCOMPARE(renderLayout(sourceImage(), state).convertToFormat(QImage::Format_ARGB32), sourceImage());
+    }
+    void minimalChangesMergeAParentAndKeepNestedEditsSeparate() {
+        auto state = createLayout({160, 120}, tableRegions());
+        const auto parent = groupId(state, "1234");
+        transformLayoutGroup(state, parent, {50, 50, 90, 60});
+        auto changes = exportLayoutChanges(state);
+        QCOMPARE(changes.size(), 1);
+        QCOMPARE(changes[0].toObject(),
+                 (QJsonObject{{"from", rectJson({10, 10, 60, 40})}, {"to", rectJson({50, 50, 90, 60})}}));
+        auto restored = importLayoutChanges(changes, state.canvas);
+        QCOMPARE(renderLayout(sourceImage(), restored), renderLayout(sourceImage(), state));
+
+        transformLayoutGroup(state, groupId(state, "1"), {10, 70, 45, 30});
+        changes = exportLayoutChanges(state);
+        QCOMPARE(changes.size(),
+                 3); // A differently moved child and the two rectangles of the L-shaped remainder.
+        restored = importLayoutChanges(changes, state.canvas);
+        QCOMPARE(renderLayout(sourceImage(), restored), renderLayout(sourceImage(), state));
+        double area = 0;
+        for (const auto &value : changes) {
+            const auto from = value.toObject()["from"].toObject();
+            area += (from["x2"].toDouble() - from["x1"].toDouble()) *
+                    (from["y2"].toDouble() - from["y1"].toDouble());
+        }
+        QCOMPARE(area, 2400.0);
+    }
+    void minimalChangesPreserveLayerOrderAndSwaps() {
+        auto state = createLayout({160, 120}, tableRegions());
+        transformLayoutGroup(state, groupId(state, "1"), {80, 10, 30, 20});
+        transformLayoutGroup(state, groupId(state, "3"), {90, 10, 30, 20});
+        transformLayoutGroup(state, groupId(state, "2"), {110, 10, 30, 20});
+        auto changes = exportLayoutChanges(state);
+        QCOMPARE(changes.size(), 3); // Merging adjacent 1 and 2 would cover component 3 incorrectly.
+        auto restored = importLayoutChanges(changes, state.canvas);
+        QCOMPARE(renderLayout(sourceImage(), restored), renderLayout(sourceImage(), state));
+        QCOMPARE(renderLayout(sourceImage(), restored).pixelColor(100, 20), QColor("#3070e0"));
+
+        state = createLayout({160, 120}, tableRegions());
+        transformLayoutGroup(state, groupId(state, "1"), {40, 10, 30, 20});
+        transformLayoutGroup(state, groupId(state, "2"), {10, 10, 30, 20});
+        restored = importLayoutChanges(exportLayoutChanges(state), state.canvas);
+        QCOMPARE(renderLayout(sourceImage(), restored), renderLayout(sourceImage(), state));
+        QCOMPARE(renderLayout(sourceImage(), restored).pixelColor(20, 20), QColor("#20a060"));
+        QCOMPARE(renderLayout(sourceImage(), restored).pixelColor(50, 20), QColor("#f04050"));
+
+        // Returning a region to its source removes its record even after it was brought to the front.
+        transformLayoutGroup(state, groupId(state, "2"), {40, 10, 30, 20});
+        changes = exportLayoutChanges(state);
+        QCOMPARE(changes.size(), 1);
+        restored = importLayoutChanges(changes, state.canvas);
+        QCOMPARE(renderLayout(sourceImage(), restored), renderLayout(sourceImage(), state));
+    }
+    void minimalChangesCollapseDenseDetectorPartitions() {
+        QVector<Candidate> candidates;
+        for (int y = 0; y < 10; ++y)
+            for (int x = 0; x < 20; ++x)
+                candidates.append(candidate({10 + x * 4, 10 + y * 4, 4, 4}, QString("%1-%2").arg(x).arg(y)));
+        candidates.append(candidate({10, 10, 80, 40}, "table"));
+        auto state = createLayout({200, 150}, candidates);
+        QVERIFY(state.pieces.size() >= 200);
+        transformLayoutGroup(state, groupId(state, "table"), {100, 80, 80, 40});
+        auto changes = exportLayoutChanges(state);
+        QCOMPARE(changes.size(), 1);
+        QCOMPARE(changes[0].toObject()["from"], QJsonValue(rectJson({10, 10, 80, 40})));
+    }
+    void minimalFeedbackRoundTripsAndRejectsCorruption() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        auto document = fromImage(sourceImage(), "demo", "精简反馈");
+        document.layout = createLayout(document.image.size(), tableRegions());
+        transformLayoutGroup(*document.layout, groupId(*document.layout, "1234"), {50, 50, 90, 60});
+        Note point;
+        point.point = {20, 20};
+        point.comment = "加大标题";
+        Note rectangle;
+        rectangle.isPoint = false;
+        rectangle.rect = {10, 10, 60, 40};
+        rectangle.comment = "表格右移";
+        document.notes = {point, rectangle};
+        const auto feedback = exportFeedback(document);
+        QCOMPARE(feedback.keys(), QStringList({"annotationSpace", "capture", "image", "objects", "schemaVersion", "tool"}));
+        const auto objects = feedback["objects"].toArray();
+        QCOMPARE(objects.size(), 3);
+        // 移动条目：父组件 "1234" 从 (10,10,60x40) 移动到 (50,50,90x60)。
+        QCOMPARE(objects[2].toObject(),
+                 (QJsonObject{{"id", "o3"}, {"kind", "region"}, {"source", rectJson({10, 10, 60, 40})},
+                              {"movement", QJsonObject{{"rect", rectJson({50, 50, 90, 60})}, {"dx", 40}, {"dy", 40}, {"scaleX", 1.5}, {"scaleY", 1.5}}},
+                              {"annotations", QJsonArray{}}}));
+        // 点批注：(20,20) 处的 "加大标题"。
+        QCOMPARE(objects[0].toObject(),
+                 (QJsonObject{{"id", "o1"}, {"kind", "point"}, {"point", QJsonObject{{"x", 20}, {"y", 20}}},
+                              {"annotations", QJsonArray{QJsonObject{{"number", 1}, {"text", "加大标题"}}}}}));
+        // 矩形批注：(10,10,60x40) 处的 "表格右移"。
+        QCOMPARE(objects[1].toObject(),
+                 (QJsonObject{{"id", "o2"}, {"kind", "region"}, {"source", rectJson({10, 10, 60, 40})},
+                              {"annotations", QJsonArray{QJsonObject{{"number", 2}, {"text", "表格右移"}}}}}));
+        const auto compact = serializeFeedback(document);
+        auto payload = feedback;
+        for (const auto *field : {"$schema", "schemaVersion", "tool", "exportedAt"})
+            payload.remove(field);
+        const auto payloadBytes = QJsonDocument(payload).toJson(QJsonDocument::Compact);
+        QVERIFY(payloadBytes.size() < 950); // Bounded image/capture metadata, IDs and notes; never encoded image bytes.
+        QVERIFY(compact.size() - payloadBytes.size() < 250); // Metadata stays bounded too.
+        const auto path = directory.filePath("feedback-minimal.json");
+        saveBytes(path, compact);
+        QVERIFY_EXCEPTION_THROWN(loadDocument(path),
+                                 std::runtime_error); // The matching source image is required.
+        saveBytes(directory.filePath("feedback.png"), document.png);
+        const auto restored = loadDocument(path);
+        QVERIFY(restored.layout.has_value());
+        QCOMPARE(stableFeedback(exportFeedback(restored)), stableFeedback(feedback));
+        QCOMPARE(renderLayout(restored.image, *restored.layout),
+                 renderLayout(document.image, *document.layout));
+        const auto folder = qEnvironmentVariable("H2D_TEST_ARTIFACTS");
+        if (!folder.isEmpty()) {
+            QVERIFY(QDir().mkpath(folder));
+            // Unversioned feedback also imports without the optional coordinate tag.
+            auto notag = unversionedLegacyFeedback(feedback);
+            notag.remove("annotationSpace");
+            notag.remove("image");
+            notag.remove("capture");
+            saveBytes(QDir(folder).filePath("feedback-notag.json"),
+                      QJsonDocument(notag).toJson(QJsonDocument::Compact));
+            saveBytes(QDir(folder).filePath("feedback-notag.png"), document.png);
+        }
+        auto invalid = feedback;
+        invalid["tool"] = "unexpected";
+        QVERIFY_EXCEPTION_THROWN(loadFeedback(invalid, document.image, document.png), std::runtime_error);
+        invalid = feedback;
+        // 对象包含未知字段时被拒绝。
+        auto badObjects = feedback["objects"].toArray();
+        auto badObject = badObjects[0].toObject();
+        badObject["extra"] = true;
+        badObjects[0] = badObject;
+        invalid["objects"] = badObjects;
+        QVERIFY_EXCEPTION_THROWN(loadFeedback(invalid, document.image, document.png), std::runtime_error);
+        invalid = feedback;
+        // Reject malformed final targets before restoring any layout.
+        for (const auto &target : {QJsonValue(rectJson({0, 0, 10000001, 10000001})),
+                                 QJsonValue(QJsonObject{{"x1", 100}, {"y1", 100}, {"x2", 50}, {"y2", 50}}),
+                                 QJsonValue("not-an-object")}) {
+            invalid = feedback; badObjects = feedback["objects"].toArray();
+            badObject = badObjects[2].toObject();
+            auto movement = badObject["movement"].toObject(); movement["rect"] = target;
+            badObject["movement"] = movement; badObjects[2] = badObject; invalid["objects"] = badObjects;
+            QVERIFY_EXCEPTION_THROWN(loadFeedback(invalid, document.image, document.png), std::runtime_error);
+        }
+        // v3 point coordinates are integer pixel positions; importing a
+        // fractional value must not silently round it into a different point.
+        invalid = feedback;
+        badObjects = invalid["objects"].toArray();
+        badObject = badObjects[0].toObject();
+        auto badPoint = badObject["point"].toObject();
+        badPoint["x"] = 20.5;
+        badObject["point"] = badPoint;
+        badObjects[0] = badObject;
+        invalid["objects"] = badObjects;
+        QVERIFY_EXCEPTION_THROWN(loadFeedback(invalid, document.image, document.png), std::runtime_error);
+    }
+    void centeredResizeSurvivesFeedbackRoundTrip() {
+        auto document = fromImage(sourceImage(), "demo", "centered resize");
+        document.layout = createLayout(document.image.size(), {});
+        const auto id = addLayoutRegion(*document.layout, {40, 30, 40, 40});
+        transformLayoutGroup(*document.layout, id, {30, 20, 60, 60});
+        const auto feedback = exportFeedback(document);
+        QCOMPARE(feedback["objects"].toArray().size(), 1);
+        const auto object = feedback["objects"].toArray()[0].toObject();
+        QCOMPARE(object.contains("movement"), true);
+        const auto restored = loadFeedback(feedback, document.image, document.png);
+        QVERIFY(restored.layout.has_value());
+        QCOMPARE(renderLayout(restored.image, *restored.layout),
+                 renderLayout(document.image, *document.layout));
+        QCOMPARE(stableFeedback(exportFeedback(restored)), stableFeedback(feedback));
+    }
+    void feedbackMergesSourcesThatRoundToTheSamePixels() {
+        auto document = fromImage(sourceImage(), "demo", "fractional source regions");
+        document.layout = createLayout(document.image.size(), {});
+        const QRectF first(10.000001, 10, 20, 20), second(10.000002, 10, 20, 20);
+        const auto firstId = addLayoutRegion(*document.layout, first);
+        const auto secondId = addLayoutRegion(*document.layout, second);
+        transformLayoutGroup(*document.layout, firstId, {50, 30, 20, 20});
+        transformLayoutGroup(*document.layout, secondId, {80, 50, 20, 20});
+        for (const auto &source : {first, second}) {
+            Note note; note.isPoint = false; note.movementSource = source;
+            note.rect = {50, 30, 20, 20}; note.comment = QString::number(document.notes.size() + 1);
+            document.notes.append(note);
+        }
+        const auto feedback = exportFeedback(document, true);
+        const auto objects = feedback["objects"].toArray();
+        QCOMPARE(objects.size(), 1);
+        QCOMPARE(objects[0].toObject()["source"].toObject()["x1"].toInt(), 10);
+        QCOMPARE(objects[0].toObject().contains("movement"), true);
+        QCOMPARE(objects[0].toObject()["annotations"].toArray().size(), 2);
+        const auto restored = exportFeedback(loadFeedback(feedback, {}), true)["objects"].toArray();
+        QCOMPARE(restored.size(), 1);
+        // The layout importer can collapse intermediate targets. Its final
+        // result and every attached annotation must survive the round trip.
+        for (const auto &key : {"id", "kind", "source", "movement", "annotations"})
+            QCOMPARE(restored[0].toObject()[key], objects[0].toObject()[key]);
+    }
+    void removingParentMovementPreservesDetachedChild() {
+        auto document = fromImage(sourceImage(), "demo", "delete movement");
+        document.layout = createLayout(document.image.size(), {});
+        const auto parent = addLayoutRegion(*document.layout, {10, 10, 80, 80});
+        const auto child = addLayoutRegion(*document.layout, {10, 10, 40, 80});
+        transformLayoutGroup(*document.layout, parent, {80, 10, 80, 80});
+        transformLayoutGroup(*document.layout, child, {20, 10, 40, 80});
+        Note parentNote; parentNote.isPoint = false; parentNote.movementSource = QRectF(10, 10, 80, 80);
+        parentNote.rect = {80, 10, 80, 80}; parentNote.comment = "删除父位移";
+        Note childNote; childNote.isPoint = false; childNote.movementSource = QRectF(10, 10, 40, 80);
+        childNote.rect = {20, 10, 40, 80}; childNote.comment = "保留子位移";
+        document.notes = {parentNote, childNote};
+        const auto before = *document.layout;
+        removeNote(document, parentNote.id);
+        QCOMPARE(document.notes.size(), 1); QCOMPARE(document.notes[0].comment, childNote.comment);
+        const auto childMembers = members(before, child), parentMembers = members(before, parent);
+        for (const auto &piece : document.layout->pieces) {
+            if (childMembers.contains(piece.id)) QCOMPARE(piece.destination, pieceById(before, piece.id)->destination);
+            if (parentMembers.contains(piece.id)) QCOMPARE(piece.destination, piece.source);
+        }
+        QCOMPARE(movementMarkers(*document.layout, document.notes).size(), 1);
+        const auto feedback = exportFeedback(document, true);
+        QCOMPARE(feedback["objects"].toArray().size(), 1);
+        QVERIFY(feedback["objects"].toArray()[0].toObject().contains("movement"));
+        QCOMPARE(stableFeedback(exportFeedback(loadFeedback(feedback, {}), true)), stableFeedback(feedback));
+    }
+    void feedbackRoundsCoordinatesAndDebouncesScale() {
+        QImage image(1120, 720, QImage::Format_ARGB32); image.fill(Qt::white);
+        auto document = fromImage(image, "demo", "integer feedback");
+        const QRectF source(10.2, 20.7, 300.2, 100.2), destination(41.6, 15.2, 300.2 * 1.1263, 100.2 * 1.003);
+        document.layout = importLayoutSequences({{source, {destination}}}, document.image.size());
+        const auto originalLayout = document.layout;
+        const auto feedback = exportFeedback(document, true);
+        const auto object = feedback["objects"].toArray()[0].toObject();
+        QCOMPARE(object["source"].toObject(), rectJson({10, 21, 300, 100}));
+        QCOMPARE(object["movement"].toObject(), (QJsonObject{{"rect", rectJson({42, 15, 338, 100})},
+                  {"dx", 32}, {"dy", -6}, {"scaleX", 1.13}}));
+        QCOMPARE(document.layout, originalLayout);
+        QCOMPARE(stableFeedback(exportFeedback(loadFeedback(feedback, {}), true)), stableFeedback(feedback));
+        auto older = feedback; auto olderObjects = older["objects"].toArray(); auto olderObject = olderObjects[0].toObject();
+        const auto floating = [](QRectF r) { return QJsonObject{{"x1", r.left()}, {"y1", r.top()}, {"x2", r.right()}, {"y2", r.bottom()}}; };
+        olderObject["source"] = floating(source);
+        olderObject["movements"] = QJsonArray{QJsonObject{{"to", floating(destination)}}};
+        olderObject.remove("movement"); olderObject["result"] = QJsonObject{{"rect", floating(destination)}, {"dx", destination.x() - source.x()},
+                            {"dy", destination.y() - source.y()}, {"scaleX", 1.1263}, {"scaleY", 1.003}};
+        olderObjects[0] = olderObject; older["objects"] = olderObjects;
+        QCOMPARE(stableFeedback(exportFeedback(loadFeedback(older, {}), true)), stableFeedback(feedback));
+        auto forged = feedback; auto objects = forged["objects"].toArray(); auto bad = objects[0].toObject();
+        auto result = bad["movement"].toObject(); result.remove("scaleX"); bad["movement"] = result; objects[0] = bad; forged["objects"] = objects;
+        QVERIFY_EXCEPTION_THROWN(loadFeedback(forged, {}), std::runtime_error);
+    }
+    void feedbackDropsResizeJitterAndPreservesTinyRegions() {
+        QImage image(1120, 720, QImage::Format_ARGB32); image.fill(Qt::white);
+        auto document = fromImage(image, "demo", "resize jitter");
+        const QRectF source(10, 10, 1000, 600);
+        document.layout = importLayoutSequences({{source, {QRectF(10.2, 10.2, 1003, 598.2)}}}, document.image.size());
+        QVERIFY(exportFeedback(document)["objects"].toArray().isEmpty());
+        Note note; note.isPoint = false; note.movementSource = source; note.rect = {10, 10, 1003, 599};
+        note.comment = "保留意见"; note.recognizedText = {{"text", "保留识别"}, {"engine", "test"}};
+        document.notes = {note};
+        const auto retained = exportFeedback(document)["objects"].toArray()[0].toObject();
+        QVERIFY(!retained.contains("movements")); QVERIFY(!retained.contains("movement"));
+        QCOMPARE(retained["ocrtext"].toString(), QString("保留识别"));
+        QCOMPARE(retained["annotations"].toArray().size(), 1);
+        document.notes.clear();
+        document.layout = importLayoutSequences({{QRectF(1119.8, 719.8, .1, .1), {QRectF(100.8, 100.8, .1, .1)}}}, document.image.size());
+        const auto tiny = exportFeedback(document, true);
+        QCOMPARE(tiny["objects"].toArray()[0].toObject()["source"].toObject(), rectJson({1119, 719, 1, 1}));
+        QCOMPARE(stableFeedback(exportFeedback(loadFeedback(tiny, {}), true)), stableFeedback(tiny));
+    }
+    void feedbackKeepsChangesBeyondTheSelectableGroupLimit() {
+        QImage image(1600, 80, QImage::Format_ARGB32);
+        for (int y = 0; y < image.height(); ++y)
+            for (int x = 0; x < image.width(); ++x)
+                image.setPixelColor(x, y, QColor(x % 256, y * 3, (x + y) % 256));
+        QJsonArray changes;
+        for (int i = 0; i < MaxLayoutGroups; ++i)
+            changes.append(QJsonObject{{"from", rectJson({i * 3, 10, 2, 10})},
+                                        {"to", rectJson({i * 3, 40 + i % 2, 2, 10})}});
+        const QJsonObject legacy{{"annotationSpace", "result"}, {"changes", changes},
+                                 {"annotations", QJsonArray{}}};
+        const auto original = loadFeedback(legacy, image);
+        const auto feedback = exportFeedback(original);
+        QCOMPARE(feedback["objects"].toArray().size(), MaxLayoutGroups);
+        const auto restored = loadFeedback(feedback, image, original.png);
+        QVERIFY(restored.layout.has_value());
+        QCOMPARE(restored.layout->groups.size(), MaxLayoutGroups);
+        QCOMPARE(stableFeedback(exportFeedback(restored)), stableFeedback(feedback));
+        QCOMPARE(renderLayout(restored.image, *restored.layout),
+                 renderLayout(original.image, *original.layout));
+        QVERIFY(importLayout(exportLayout(*restored.layout), image.size()) == *restored.layout);
+    }
+    void objectReconstructionBoundsTemporaryMembership() {
+        QVector<LayoutSequence> duplicateSources;
+        for (int i = 0; i < MaxLayoutMovements; ++i)
+            duplicateSources.append({QRectF(10, 10, 20, 20), {QRectF(50, 50, 20, 20)}});
+        QVERIFY_EXCEPTION_THROWN(importLayoutSequences(duplicateSources, {100, 100}), std::runtime_error);
+        QVector<LayoutSequence> overlapping;
+        for (int i = 0; i < MaxLayoutMovements; ++i) {
+            const QRectF source(10 + i * .001, 10, 50, 50);
+            overlapping.append({source, {QRectF(20, 20, 50, 50)}});
+        }
+        bool referenceLimitRejected = false;
+        try {
+            importLayoutSequences(overlapping, {100, 100});
+        } catch (const std::runtime_error &error) {
+            referenceLimitRejected = QString::fromUtf8(error.what()).contains("引用数量超出限制");
+        }
+        QVERIFY(referenceLimitRejected);
+        QVERIFY_EXCEPTION_THROWN(importLayoutSequences({{QRectF(10, 10, 20, 20), {}}}, {100, 100}),
+                                 std::runtime_error);
+    }
+    void embeddedFeedbackNeedsNoSidecarAndPreservesOriginal() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        auto document = fromImage(sourceImage(), "demo", "内嵌原图反馈");
+        document.layout = createLayout(document.image.size(), tableRegions());
+        transformLayoutGroup(*document.layout, groupId(*document.layout, "1"), {90, 70, 30, 20});
+        Note point;
+        point.point = {100, 80};
+        point.comment = "编辑后添加的批注";
+        Note rectangle;
+        rectangle.isPoint = false;
+        rectangle.rect = {90, 70, 30, 20};
+        rectangle.comment = "这里加大文字";
+        document.notes = {point, rectangle};
+        const auto feedback = exportFeedback(document, true);
+        QCOMPARE(feedback.keys(), QStringList({"annotationSpace", "capture", "image", "objects", "schemaVersion", "tool"}));
+        QCOMPARE(feedback["annotationSpace"], QJsonValue("result"));
+        QCOMPARE(feedback["objects"].toArray().size(), 3);
+        QCOMPARE(feedback["image"].toObject()["mode"].toString(), QString("embedded"));
+        QCOMPARE(feedback["image"].toObject()["dataUrl"],
+                 QJsonValue("data:image/png;base64," + QString::fromLatin1(document.png.toBase64())));
+        const auto path = directory.filePath("embedded.json");
+        saveBytes(path, serializeFeedback(document, true));
+        QVERIFY(!QFileInfo::exists(directory.filePath("embedded.png")));
+        const auto restored = loadDocument(path);
+        QCOMPARE(restored.png, document.png);
+        QCOMPARE(restored.image, document.image);
+        QCOMPARE(stableFeedback(exportFeedback(restored, true)), stableFeedback(feedback));
+        QVERIFY(restored.layout.has_value());
+        QCOMPARE(renderLayout(restored.image, *restored.layout),
+                 renderLayout(document.image, *document.layout));
+
+        // Artifact names carry the format, not the application version: this is the current
+        // compact feedback, with and without the embedded original. scripts/validate-exports.py
+        // reads exactly these names.
+        const QString folder = qEnvironmentVariable("H2D_TEST_ARTIFACTS");
+        if (!folder.isEmpty()) {
+            QVERIFY(QDir().mkpath(folder));
+            const auto bundle = buildFeedbackBundle(document);
+            saveBytes(QDir(folder).filePath("feedback.json"), bundle.json);
+            for (auto it = bundle.files.cbegin(); it != bundle.files.cend(); ++it) saveBytes(QDir(folder).filePath(it.key()), it.value());
+            saveBytes(QDir(folder).filePath("feedback-no-image.json"), serializeFeedback(document, false));
+        }
+        for (const auto &invalidImage :
+             {QJsonValue(true), QJsonValue("data:image/jpeg;base64,AA=="),
+              QJsonValue("data:image/png;base64,!!!"), QJsonValue("data:image/png;base64,QQ=="),
+              QJsonValue("data:image/png;base64,")}) {
+            auto invalid = feedback;
+            invalid["image"] = invalidImage;
+            saveBytes(path, QJsonDocument(invalid).toJson(QJsonDocument::Compact));
+            QVERIFY_EXCEPTION_THROWN(loadDocument(path), std::runtime_error);
+        }
+        auto invalid = feedback;
+        invalid["annotationSpace"] = "original";
+        QVERIFY_EXCEPTION_THROWN(loadFeedback(invalid, document.image, document.png), std::runtime_error);
+        invalid = feedback;
+        invalid["extra"] = true;
+        QVERIFY_EXCEPTION_THROWN(loadFeedback(invalid, document.image, document.png), std::runtime_error);
+        auto badPng = document.png;
+        for (int i = 16; i < 24; ++i)
+            badPng[i] = char(0xff); // Reject absurd dimensions before PNG decoding allocates pixels.
+        invalid = feedback;
+        invalid["image"] = "data:image/png;base64," + QString::fromLatin1(badPng.toBase64());
+        saveBytes(path, QJsonDocument(invalid).toJson(QJsonDocument::Compact));
+        QVERIFY_EXCEPTION_THROWN(loadDocument(path), std::runtime_error);
+        QImage wrongImage = document.image;
+        wrongImage.setPixelColor(0, 0, Qt::magenta);
+        QVERIFY_EXCEPTION_THROWN(loadFeedback(feedback, wrongImage), std::runtime_error);
+    }
+    void movementNotesAndLosslessProjectRoundTrip() {
+        auto doc = fromImage(sourceImage(), "demo", "移动意见");
+        const auto original = createLayout(doc.image.size(), tableRegions());
+        doc.layout = original;
+        const auto cell = groupId(*doc.layout, "1");
+        transformLayoutGroup(*doc.layout, cell, {90, 70, 30, 20});
+        Note movement;
+        movement.isPoint = false;
+        movement.movementSource = QRectF(10, 10, 30, 20);
+        movement.rect = {90, 70, 30, 20};
+        movement.comment = "保持这个位置，视觉更轻盈";
+        Note global;
+        global.isGlobal = true;
+        global.comment = "整体采用杂志风格";
+        Note inHole;
+        inHole.point = {20, 20};
+        inHole.comment = "调整后的空白保留";
+        doc.notes = {movement, global, inHole};
+        QCOMPARE(movementAnnotationIndex(movement, *doc.layout), 0);
+        QCOMPARE(*movementAnnotationDestination(movement, *doc.layout), QRectF(90, 70, 30, 20));
+        const auto feedback = exportFeedback(doc, true);
+        // 移动批注通过 movementSource 合并到对应移动条目的对象中。
+        const auto feedbackObjects = feedback["objects"].toArray();
+        QCOMPARE(feedbackObjects.size(), 3);
+        QCOMPARE(feedbackObjects[0].toObject(),
+                 (QJsonObject{{"id", "o1"}, {"kind", "region"}, {"source", rectJson({10, 10, 30, 20})},
+                              {"movement", QJsonObject{{"rect", rectJson({90, 70, 30, 20})}, {"dx", 80}, {"dy", 60}}},
+                              {"annotations", QJsonArray{QJsonObject{{"number", 1}, {"text", movement.comment}}}}}));
+        QCOMPARE(feedbackObjects[1].toObject()["kind"].toString(), QString("global"));
+        QVERIFY(!feedbackObjects[1].toObject().contains("source"));
+        QCOMPARE(feedbackObjects[1].toObject()["annotations"].toArray()[0].toObject()["text"].toString(), global.comment);
+        const auto imported = loadFeedback(feedback, {});
+        QCOMPARE(imported.notes[0].movementSource, movement.movementSource);
+        QCOMPARE(imported.notes[0].rect, movement.rect);
+        QVERIFY(imported.notes[1].isGlobal);
+        QCOMPARE(imported.notes[2].point, inHole.point);
+        QTemporaryDir directory;
+        const auto path = directory.filePath("设计.thisbit");
+        saveBytes(path, serializeDocument(doc, true));
+        const auto restored = loadDocument(path);
+        QCOMPARE(restored.notes, doc.notes);
+        QCOMPARE(restored.layout, doc.layout);
+        QCOMPARE(restored.image, doc.image);
+        QCOMPARE(stableFeedback(exportFeedback(restored)), stableFeedback(exportFeedback(doc)));
+        // Notes added in transparent holes must survive without a lossy reverse mapping.
+        QCOMPARE(restored.notes[2].point, inHole.point);
+        auto movedAgain = *doc.layout;
+        transformLayoutGroup(movedAgain, cell, {80, 60, 45, 30});
+        const auto remapped = remapNotes(doc.notes, *doc.layout, movedAgain);
+        QCOMPARE(remapped[0].rect, QRect(80, 60, 45, 30));
+        QCOMPARE(remapped[0].movementSource, movement.movementSource);
+        QCOMPARE(remapped[1], global);
+        doc.notes = remapNotes(doc.notes, *doc.layout, original);
+        doc.layout = original;
+        const auto reverted = exportFeedback(doc);
+        // 布局回到原图后没有移动条目，对象列表中无移动记录。
+        const auto revertedObjects = reverted["objects"].toArray();
+        bool hasMovements = false;
+        for (const auto &obj : revertedObjects)
+            hasMovements = hasMovements || obj.toObject().contains("movement");
+        QVERIFY(!hasMovements);
+        QCOMPARE(doc.notes[0].rect, QRect(10, 10, 30, 20));
+        // 移动批注回到源位置后仍作为矩形批注保留在对象中。
+        QCOMPARE(revertedObjects[0].toObject()["source"], QJsonValue(rectJson({10, 10, 30, 20})));
+        QVERIFY(!revertedObjects[0].toObject().contains("movement"));
+        for (const auto badValue : {QJsonValue(true), QJsonValue(1), QJsonValue("invalid")}) {
+            auto invalid = feedback;
+            auto badObjects = feedback["objects"].toArray();
+            auto badObject = badObjects[0].toObject();
+            badObject["source"] = badValue;
+            badObjects[0] = badObject;
+            invalid["objects"] = badObjects;
+            QVERIFY_EXCEPTION_THROWN(loadFeedback(invalid, {}), std::runtime_error);
+        }
+    }
+    void legacyAnnotationsMigrateAndFullProjectRoundTrips() {
+        auto document = fromImage(sourceImage(), "demo", "旧格式迁移");
+        document.layout = createLayout(document.image.size(), tableRegions());
+        transformLayoutGroup(*document.layout, groupId(*document.layout, "1"), {90, 70, 30, 20});
+        Note point;
+        point.point = {20, 20};
+        point.comment = "旧格式原图坐标";
+        Note rectangle;
+        rectangle.isPoint = false;
+        rectangle.rect = {10, 10, 30, 20};
+        rectangle.comment = "旧矩形";
+        document.notes = {point, rectangle};
+        auto legacy = exportFeedback(document);
+        legacy = unversionedLegacyFeedback(legacy);
+        legacy.remove("image");
+        legacy.remove("capture");
+        legacy.remove("annotationSpace");
+        auto restored = loadFeedback(legacy, document.image);
+        QCOMPARE(restored.notes[0].point, QPoint(100, 80));
+        QCOMPARE(restored.notes[1].rect, QRect(90, 70, 30, 20));
+
+        // Old v2 contains original coordinates; current documents contain result coordinates.
+        const auto full = exportDocument(restored, true);
+        QCOMPARE(full["annotations"].toArray()[0].toObject()["point"],
+                 QJsonValue(QJsonObject{{"x", 20}, {"y", 20}}));
+        QTemporaryDir directory;
+        const auto path = directory.filePath("old-v2.json");
+        saveBytes(path, QJsonDocument(full).toJson());
+        const auto fullRestored = loadDocument(path);
+        QCOMPARE(fullRestored.notes, restored.notes);
+        QCOMPARE(fullRestored.image, document.image);
+        auto reexported = exportFeedback(fullRestored), importedLegacy = exportFeedback(restored);
+        reexported.remove("capture"); importedLegacy.remove("capture"); // The old format had no acquisition metadata to preserve.
+        QCOMPARE(stableFeedback(reexported), stableFeedback(importedLegacy));
+
+        Note inHole;
+        inHole.point = {20, 20};
+        inHole.comment = "调整后空白处也可以批注";
+        restored.notes = {inHole};
+        QVERIFY_EXCEPTION_THROWN(exportDocument(restored, true), std::runtime_error);
+        QCOMPARE(loadFeedback(exportFeedback(restored, true), {}).notes[0].point, inHole.point);
+    }
+    void annotationsFollowVisibleContentAcrossMovesAndManualCuts() {
+        auto before = createLayout({160, 120}, tableRegions());
+        auto moved = before;
+        const auto cell = groupId(moved, "1");
+        transformLayoutGroup(moved, cell, {90, 70, 30, 20});
+        Note point;
+        point.point = {20, 20};
+        point.comment = "已有批注";
+        Note rectangle;
+        rectangle.isPoint = false;
+        rectangle.rect = {10, 10, 30, 20};
+        rectangle.comment = "整块";
+        auto notes = remapNotes({point, rectangle}, before, moved);
+        QCOMPARE(notes[0].point, QPoint(100, 80));
+        QCOMPARE(notes[1].rect, QRect(90, 70, 30, 20));
+        Note afterEditing;
+        afterEditing.point = {100, 80};
+        afterEditing.comment = "移动后添加";
+        notes.append(afterEditing);
+        auto movedAgain = moved;
+        transformLayoutGroup(movedAgain, cell, {80, 60, 60, 40});
+        notes = remapNotes(notes, moved, movedAgain);
+        QCOMPARE(notes[0].point, QPoint(100, 80));
+        QCOMPARE(notes[1].rect, QRect(80, 60, 60, 40));
+        QCOMPARE(notes[2].point, QPoint(100, 80));
+
+        auto cut = movedAgain;
+        const auto cutId = addLayoutRegion(cut, {90, 70, 20, 20}, "手动切块");
+        QVERIFY(!cutId.isEmpty());
+        QCOMPARE(remapNotes(notes, movedAgain, cut), notes);
+        auto shifted = cut;
+        transformLayoutGroup(shifted, cutId, {10, 80, 20, 20});
+        const auto remapped = remapNotes(notes, cut, shifted);
+        QCOMPARE(remapped[0].point, QPoint(20, 90));
+        QCOMPARE(remapped[2].point, QPoint(20, 90));
+        QCOMPARE(remapped[1].rect, notes[1].rect); // The whole rectangle no longer shares one transform.
+
+        auto overlap = before;
+        transformLayoutGroup(overlap, cell, {40, 10, 30, 20});
+        point.point = {50, 20};
+        auto lifted = overlap;
+        transformLayoutGroup(lifted, cell, {90, 70, 30, 20});
+        QCOMPARE(remapNotes({point}, overlap, lifted)[0].point, QPoint(100, 80));
+        point.point = {20, 20}; // A hole has no component to follow.
+        QCOMPARE(remapNotes({point}, overlap, lifted)[0].point, QPoint(20, 20));
+
+        auto parentMoved = before;
+        transformLayoutGroup(parentMoved, groupId(parentMoved, "1234"), {50, 50, 90, 60});
+        rectangle.rect = {10, 10, 60, 40};
+        QCOMPARE(remapNotes({rectangle}, before, parentMoved)[0].rect, QRect(50, 50, 90, 60));
+        auto partlyMoved = before;
+        transformLayoutGroup(partlyMoved, cell, {90, 70, 30, 20});
+        QCOMPARE(remapNotes({rectangle}, before, partlyMoved)[0].rect, rectangle.rect);
+    }
+    void fractionalComponentAnnotationsFollowWithoutQuantizationDrift() {
+        auto before = createLayout({160, 120}, tableRegions());
+        const auto cell = groupId(before, "1");
+        transformLayoutGroup(before, cell, {80.25, 60.5, 60.5, 40.25});
+        QVERIFY(!addLayoutRegion(before, {90.25, 70.5, 20.5, 15.25}, "内部细分").isEmpty());
+        Note frame;
+        frame.isPoint = false;
+        frame.rect = layoutBounds(before, cell).toAlignedRect();
+        frame.comment = "浮点组件的整数批注框";
+        auto after = before;
+        transformLayoutGroup(after, cell, {75.5, 52.25, 72.75, 48.5});
+        auto notes = remapNotes({frame}, before, after);
+        QCOMPARE(notes[0].rect, layoutBounds(after, cell).toAlignedRect());
+
+        auto next = after;
+        transformLayoutGroup(next, cell, {90.125, 70.875, 31.375, 20.625});
+        notes = remapNotes(notes, after, next);
+        QCOMPARE(notes[0].rect, layoutBounds(next, cell).toAlignedRect());
+
+        Note arbitrary = frame;
+        arbitrary.rect.adjust(-1, -1, 1, 1); // More than pixel quantization; includes distinct background.
+        QCOMPARE(remapNotes({arbitrary}, before, after)[0].rect, arbitrary.rect);
+        arbitrary.rect = {70, 50, 80, 55};
+        QCOMPARE(remapNotes({arbitrary}, before, after)[0].rect, arbitrary.rect);
+
+        // An outer group enclosing different transforms must not capture a note.
+        auto partlyMoved = before;
+        const auto cut = groupId(partlyMoved, "内部细分");
+        transformLayoutGroup(partlyMoved, cut, {10, 80, 20.5, 15.25});
+        QCOMPARE(remapNotes({frame}, before, partlyMoved)[0].rect, frame.rect);
+    }
+    void annotationsUseRenderedLayerOrderAfterAComponentReturnsToSource() {
+        auto state = createLayout({160, 120}, tableRegions());
+        const auto one = groupId(state, "1"), two = groupId(state, "2");
+        transformLayoutGroup(state, two, {90, 70, 30, 20});
+        transformLayoutGroup(state, one, {40, 10, 30, 20});
+        transformLayoutGroup(state, two, {40, 10, 30, 20}); // Appended last, but now an unchanged background.
+        QCOMPARE(renderLayout(sourceImage(), state).pixelColor(50, 20), QColor("#f04050"));
+        Note point;
+        point.point = {50, 20};
+        point.comment = "顶层红色";
+        Note rectangle;
+        rectangle.isPoint = false;
+        rectangle.rect = {40, 10, 30, 20};
+        rectangle.comment = "顶层整块";
+        auto after = state;
+        transformLayoutGroup(after, one, {90, 70, 30, 20});
+        const auto notes = remapNotes({point, rectangle}, state, after);
+        QCOMPARE(notes[0].point, QPoint(100, 80));
+        QCOMPARE(notes[1].rect, QRect(90, 70, 30, 20));
+    }
+    void documentRoundTripAndSchemaFixture() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        auto document = fromImage(sourceImage(), "demo", "大爆炸布局回归");
+        document.layout = createLayout(document.image.size(), tableRegions());
+        transformLayoutGroup(*document.layout, groupId(*document.layout, "1"), {85, 60, 60, 40});
+        QVERIFY(!addLayoutRegion(*document.layout, {90, 70, 20, 20}, "手动切分").isEmpty());
+        Note note;
+        note.isPoint = false;
+        note.rect = {85, 60, 60, 40};
+        note.comment = "将红色组件右移，并保持角点缩放比例。";
+        document.notes.append(note);
+        const auto exported = exportDocument(document, true);
+        QCOMPARE(exported["schemaVersion"].toString(), QString("2.0.0"));
+        QVERIFY(exported["layout"].isObject());
+        const auto path = directory.filePath("feedback-v2.json");
+        saveBytes(path, QJsonDocument(exported).toJson());
+        const auto restored = loadDocument(path);
+        QVERIFY(restored.layout.has_value());
+        auto legacyLayout = *document.layout;
+        legacyLayout.movements.reset(); // The legacy v2 export predates user-group trajectories.
+        QVERIFY(*restored.layout == legacyLayout);
+        QCOMPARE(restored.notes, document.notes);
+        QCOMPARE(restored.png, document.png);
+        QCOMPARE(renderLayout(restored.image, *restored.layout),
+                 renderLayout(document.image, *document.layout));
+        QVERIFY(exportDocument(restored, false)["capture"].toObject()["pngBase64"].isNull());
+        const QString folder = qEnvironmentVariable("H2D_TEST_ARTIFACTS");
+        if (!folder.isEmpty()) {
+            QVERIFY(QDir().mkpath(folder));
+            saveBytes(QDir(folder).filePath("feedback-v2.json"), QJsonDocument(exported).toJson());
+            // The current project format needs its own sample: this document carries a region made
+            // by hand, which is where project-v3.schema.json and the writer disagreed.
+            saveBytes(QDir(folder).filePath("project-v3.json"), serializeDocument(document, true));
+        }
+        auto broken = exported;
+        auto layout = broken["layout"].toObject();
+        auto groups = layout["groups"].toArray();
+        auto group = groups[0].toObject();
+        group["pieceIds"] = QJsonArray{"missing-piece"};
+        groups[0] = group;
+        layout["groups"] = groups;
+        broken["layout"] = layout;
+        saveBytes(path, QJsonDocument(broken).toJson());
+        QVERIFY_EXCEPTION_THROWN(loadDocument(path), std::runtime_error);
+        broken = exported;
+        broken.remove("layout");
+        saveBytes(path, QJsonDocument(broken).toJson());
+        QVERIFY_EXCEPTION_THROWN(loadDocument(path), std::runtime_error);
+        broken = exported;
+        layout = broken["layout"].toObject();
+        layout["unexpected"] = true;
+        broken["layout"] = layout;
+        saveBytes(path, QJsonDocument(broken).toJson());
+        QVERIFY_EXCEPTION_THROWN(loadDocument(path), std::runtime_error);
+        broken = exported;
+        broken["schemaVersion"] = "1.0.0";
+        saveBytes(path, QJsonDocument(broken).toJson());
+        QVERIFY_EXCEPTION_THROWN(loadDocument(path), std::runtime_error);
+    }
+};
+QTEST_GUILESS_MAIN(LayoutTests)
+#include "layout_test.moc"

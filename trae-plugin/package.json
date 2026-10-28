@@ -1,0 +1,7 @@
+{
+  "name": "@trae-plugins/thisbit",
+  "version": "0.8.22",
+  "private": true,
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "description": "Thisbit plugin for TRAE - annotate screenshots and adjust layouts visually, then hand structured feedback to AI."
+}

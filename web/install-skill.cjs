@@ -1,0 +1,92 @@
+'use strict';
+// Install the Web skill from a writable, extracted Agent Web package.
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+const crypto = require('node:crypto');
+
+const runtimeFiles = ['Thisbit.html', 'Thisbit.mcp.html', 'agent.cjs', 'agent-session.cjs', 'preview.cjs', 'preview-server.cjs', 'src/feedback.js', 'src/layout.js', 'mcp/server.bundle.cjs', 'mcp/mcp.json', 'mcp/build-info.json', 'MCP-THIRD-PARTY-NOTICES.md'];
+
+function exists(file) {
+  try { fs.lstatSync(file); return true; }
+  catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+}
+
+function destination(args, environment = process.env) {
+  if (args.length && (args.length !== 2 || args[0] !== '--destination')) {
+    throw new Error('Usage: node install-skill.cjs [--destination ABSOLUTE_SKILL_DIRECTORY]');
+  }
+  const home = environment.CODEX_HOME || path.join(os.homedir(), '.codex');
+  const target = args.length ? args[1] : path.join(home, 'skills', 'thisbit-web');
+  if (!target || !path.isAbsolute(target)) throw new Error('The skill destination must be an absolute directory.');
+  return path.resolve(target);
+}
+
+function skillFiles(directory, relative = '') {
+  const result = [];
+  for (const entry of fs.readdirSync(path.join(directory, relative), {withFileTypes:true})) {
+    const name = path.join(relative, entry.name);
+    if (entry.isDirectory()) result.push(...skillFiles(directory, name));
+    else if (entry.isFile()) result.push(name);
+    else throw new Error('Skill package contains an unsupported file: ' + name);
+  }
+  return result;
+}
+
+function install(target, directory = __dirname) {
+  if (!path.isAbsolute(target)) throw new Error('The skill destination must be an absolute directory.');
+  target = path.resolve(target);
+  directory = path.resolve(directory);
+  for (const relative of runtimeFiles) {
+    const file = path.join(directory, relative);
+    if (!fs.existsSync(file) || !fs.statSync(file).isFile()) throw new Error('Required Web runtime file is missing: ' + relative);
+  }
+  const source = path.join(directory, 'skills', 'thisbit-web');
+  if (!fs.existsSync(path.join(source, 'SKILL.md'))) throw new Error('Required skill package is missing: skills/thisbit-web/SKILL.md');
+  const files = skillFiles(source);
+  if (exists(target)) throw new Error('Skill destination already exists; nothing was changed: ' + target);
+
+  const parent = path.dirname(target);
+  fs.mkdirSync(parent, {recursive:true});
+  const staging = path.join(parent, '.thisbit-web-install-' + crypto.randomUUID());
+  if (path.dirname(path.resolve(staging)) !== parent) throw new Error('Invalid installation staging directory.');
+  fs.mkdirSync(staging);
+  try {
+    for (const relative of files) {
+      const output = path.join(staging, relative);
+      fs.mkdirSync(path.dirname(output), {recursive:true});
+      fs.copyFileSync(path.join(source, relative), output, fs.constants.COPYFILE_EXCL);
+    }
+    const cli = path.join(directory, 'agent.cjs');
+    const mcpServer = path.join(directory, 'mcp', 'server.bundle.cjs');
+    const mcpConfig = {mcpServers:{'thisbit-web':{command:process.execPath, args:[mcpServer]}}};
+    const reference = '# 本机网页入口\n\n' +
+      '安装时已核对文件的 MCP 服务（需要 Node.js 20+）：\n\n```text\n' + mcpServer + '\n```\n\n' +
+      '本机 Node.js：\n\n```text\n' + process.execPath + '\n```\n\n' +
+      '宿主 MCP 配置参考（按宿主格式合并，安装器未修改宿主配置或验证连接）：\n\n```json\n' + JSON.stringify(mcpConfig, null, 2) + '\n```\n\n' +
+      '普通浏览器兼容 CLI（Node.js 18+）：\n\n```text\n' + cli + '\n```\n\n' +
+      '此技能指向当前解压目录，不复制运行时，也不修改桌面 Thisbit 技能。保留该目录中的网页与服务文件。' +
+      'MCP 会话默认位于 ~/.thisbit/web-sessions，可用 THISBIT_WEB_DATA_DIR 指定持久目录。' +
+      '移动或删除运行时后需重新定位入口。\n';
+    fs.mkdirSync(path.join(staging, 'references'), {recursive:true});
+    fs.writeFileSync(path.join(staging, 'references', 'local-installation.md'), reference, {encoding:'utf8'});
+    // mkdir is the no-overwrite claim: rename can replace an empty directory on Unix.
+    fs.mkdirSync(target);
+    try {
+      for (const entry of fs.readdirSync(staging)) fs.renameSync(path.join(staging, entry), path.join(target, entry));
+    } catch (error) {
+      // Only this invocation created target; remove its incomplete installation.
+      fs.rmSync(target, {recursive:true, force:true});
+      throw error;
+    }
+    return {state:'installed', destination:target, cli, node:process.execPath, mcpServer, mcpConfig};
+  } finally {
+    fs.rmSync(staging, {recursive:true, force:true});
+  }
+}
+
+if (require.main === module) {
+  try { console.log(JSON.stringify(install(destination(process.argv.slice(2))))); }
+  catch (error) { console.error(JSON.stringify({error:error.message})); process.exitCode = 1; }
+}
+module.exports = {destination, install, runtimeFiles};

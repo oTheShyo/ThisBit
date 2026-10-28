@@ -1,0 +1,97 @@
+#pragma once
+#include "model.h"
+#include <QWidget>
+class QTimer;
+class QPainter;
+namespace h2d {
+class Canvas final : public QWidget {
+    Q_OBJECT
+  public:
+    enum Mode { Smart, Point, Rectangle, Adjust };
+    explicit Canvas(QWidget *parent = nullptr);
+    void setDocument(Document *doc);
+    void setPreviewSize(QSize size);
+    QSize imageSize() const { return doc_ ? doc_->image.size() : previewSize_; }
+    void setMode(Mode mode);
+    Mode mode() const {
+        return mode_;
+    }
+    void setZoom(double zoom);
+    double zoom() const {
+        return zoom_;
+    }
+    void select(const QString &id);
+    QString selected() const {
+        return selected_;
+    }
+    void refresh();
+    void setLayoutPreview(bool enabled);
+    void setAnnotationsVisible(bool visible);
+    void setMagnifierEnabled(bool enabled) { magnifierEnabled_=enabled; update(); }
+    bool magnifierEnabled() const { return magnifierEnabled_; }
+    // Rebuilds the accessible name and the current hint after a language change.
+    void retranslate();
+    bool annotationsVisible() const { return annotationsVisible_; }
+    bool layoutPreview() const {
+        return layoutPreview_;
+    }
+    QPoint toImage(QPointF position) const;
+  signals:
+    void editRequested(h2d::Note note, bool fresh, QPoint global);
+    void geometryChanged(h2d::Note note);
+    void selectionChanged(QString id);
+    void hintChanged(QString text);
+    void zoomRequested(double zoom, QPointF anchor = {});
+    void panRequested(QPoint delta);
+    void contextRequested(QPoint global);
+    void layoutEditRequested();
+    void regionRequested(QRect area);
+    void movementAnnotationRequested(QRectF source, QRectF destination);
+
+  protected:
+    void paintEvent(QPaintEvent *) override;
+    void mousePressEvent(QMouseEvent *) override;
+    void mouseMoveEvent(QMouseEvent *) override;
+    void mouseReleaseEvent(QMouseEvent *) override;
+    void mouseDoubleClickEvent(QMouseEvent *) override;
+    void wheelEvent(QWheelEvent *) override;
+    void keyPressEvent(QKeyEvent *) override;
+    void keyReleaseEvent(QKeyEvent *) override;
+    void leaveEvent(QEvent *) override;
+    void focusOutEvent(QFocusEvent *) override;
+
+  private:
+    void paintScene(QPainter &p, QRect exposed);
+    bool magnifierEnabled_=true, pointerInside_=false;
+    QPointF pointer_;
+    int hit(QPointF screen, bool rectangles) const;
+    QPointF noteAnchor(const Note &note) const;
+    int hitMovement(QPointF screen) const;
+    void updateAnnotationHover(QPointF screen);
+    void updateHint();
+    void rebuildDisplay();
+    void stopMiddlePan(bool suppressMouse = false);
+    Document *doc_ = nullptr;
+    QSize previewSize_;
+    Mode mode_ = Smart;
+    double zoom_ = 1;
+    QString selected_;
+    CandidatePicker picker_;
+    bool drawing_ = false, moving_ = false, panning_ = false, space_ = false;
+    bool middlePanning_ = false, suppressMouse_ = false;
+    QPoint start_, end_, panStart_, windowStart_, middlePanLast_;
+    Note original_, preview_;
+    int handle_ = -1;
+    std::optional<Candidate> pending_;
+    bool layoutPreview_ = false;
+    QImage layoutImage_;
+    QVector<Candidate> displayCandidates_;
+    QVector<MovementMarker> movements_;
+    bool annotationsVisible_ = true;
+    QString hoveredNote_;
+    int hoveredMovement_ = -1;
+    QTimer *hoverTimer_;
+    double hoverPhase_ = 0;
+};
+} // namespace h2d
+Q_DECLARE_METATYPE(h2d::Note)

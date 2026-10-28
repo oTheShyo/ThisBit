@@ -1,0 +1,379 @@
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+const layout = require('../src/layout.js');
+const feedback = require('../src/feedback.js');
+const imageFormat=require('../src/image-format.js'),bundle=require('../src/bundle.js');
+const image=require('./image-fixture.cjs').pngData(200,100);
+const rect = (x1, y1, x2, y2) => ({ x1, y1, x2, y2 });
+const plain = value => JSON.parse(JSON.stringify(value));
+const legacyObjects = objects => objects.map(feedback.legacyObject).map(({id, ...object}) => ({...object, annotations:object.annotations.map(annotation => typeof annotation === 'string' ? annotation : annotation.text)}));
+
+// Execute the complete production app. Only browser rendering and DOM storage
+// are stubbed; transforms, note submission, reset, history and feedback export
+// below all call the real closures from app.js.
+function appHarness() {
+  const elements = new Map();
+  const drawing = new Proxy({}, { get: (object, key) => object[key] ?? (() => {}), set: (object, key, value) => (object[key] = value, true) });
+  function element(id) {
+    if (!elements.has(id)) {
+      const classes = new Set();
+      const node = { id, style: {}, dataset: {}, value: '', textContent: '', innerHTML: '', hidden: false, checked: true,
+        classList: { add: name => classes.add(name), remove: name => classes.delete(name), toggle: (name, force) => force ? classes.add(name) : classes.delete(name), contains: name => classes.has(name) },
+        addEventListener() {}, setAttribute() {}, removeAttribute() {}, focus() {}, select() {}, setCustomValidity() {}, reportValidity() {}, append() {},
+        querySelector: selector => element(id + ' ' + selector), querySelectorAll: () => [],
+        getContext: () => drawing, getBoundingClientRect: () => ({ x: 0, y: 0, left: 0, top: 0, right: 200, bottom: 100, width: 200, height: 100 }),
+        showModal() { this.open = true; }, close() { this.open = false; }, click() { return this.onclick?.(); },
+        pause() {}, load() {}, hasPointerCapture: () => false, releasePointerCapture() {}, setPointerCapture() {}, clientWidth: 200, clientHeight: 100 };
+      elements.set(id, node);
+    }
+    return elements.get(id);
+  }
+  const document = { getElementById: element, querySelector: selector => element(selector.replace(/^#/, '')), querySelectorAll: () => [],
+    addEventListener() {}, createElement: tag => element('created-' + tag), documentElement: { outerHTML: '', cloneNode:()=>({outerHTML:'',querySelectorAll:()=>[]}) }, body: element('body') };
+  const sandbox = { document, ThisbitLayout: layout, ThisbitFeedback: feedback, ThisbitImage:imageFormat,ThisbitBundle:bundle, window: { addEventListener() {}, dispatchEvent() {} }, Event:class {}, console,
+    ResizeObserver: class { observe() {} }, setTimeout: () => 0, clearTimeout() {}, getComputedStyle: () => ({ display: 'block', visibility: 'visible', opacity: '1' }),
+    // Media decoding is outside these model tests. Preserve fixture dimensions
+    // while exercising the actual project metadata restore/validation path.
+    Image: class { constructor() { this.complete = false; this.naturalWidth = 200; this.naturalHeight = 100; } async decode() {} } };
+  vm.createContext(sandbox);
+  const production = fs.readFileSync(path.join(__dirname, '../src/app.js'), 'utf8');
+  const exposure = `
+    globalThis.__movementTest = {
+      load(value) {
+        doc = makeDoc({ complete: false, naturalWidth: value.width, naturalHeight: value.height }, ${JSON.stringify(image)}, null, 'movement-fixture');
+        doc.layout = clone(value); session = { kind: 'image', name: 'fixture.png', width: value.width, height: value.height, document: doc };
+        selected = null;
+      },
+      select(id) { chooseGroup(id); },
+      annotateAt(source,text) { editNote(source); $('note-text').value=text; $('note-form').onsubmit({preventDefault(){}}); },
+      resolveParent(id,asChild) { resolveParent(id,asChild); },
+      addToSelection(id) { chooseGroup(id, true); },
+      transform(destination) { applyTransform(destination); },
+      moveSelection(destination) {
+        $('gx').value = destination.x1; $('gy').value = destination.y1;
+        $('gw').value = destination.x2 - destination.x1; $('gh').value = destination.y2 - destination.y1;
+        $('apply-geometry').onclick();
+      },
+      annotate(groupId, text) {
+        const marker = movementMarkers().find(item => item.groupId === groupId);
+        if (!marker) throw new Error('No active arrow for ' + groupId);
+        editMovement(marker); $('note-text').value = text; $('note-form').onsubmit({ preventDefault() {} });
+      },
+      annotateSelection(text) { $('component-note').onclick(); $('note-text').value = text; $('note-form').onsubmit({ preventDefault() {} }); },
+      reset() { $('reset-component').onclick(); },
+      removeNote(id) { deleteNote(id); },
+      undo() { travelHistory('undo'); }, redo() { travelHistory('redo'); },
+      state() { return clone({ layout: doc.layout, notes: doc.notes, raw: rawMovements(), markers: movementMarkers() }); },
+      noteBounds(id) { return noteRect(doc.notes.find(note => note.id === id)); },
+      serialized() { return serializedDoc(doc); },
+      async restore(value) { const restored = await restoredDoc(value, session.width, session.height, false); doc = restored; session.document = doc; chooseGroup(null); },
+      async importFeedback(value) {
+        const restored = await docFromFeedback({...value,image:typeof value.image==='object'?I.descriptor(${JSON.stringify(image)},'embedded'):value.image}); doc = restored.doc;
+        session = { kind: 'image', name: 'native-feedback.png', width: restored.width, height: restored.height, document: doc };
+        chooseGroup(null);
+      },
+      async importVideoFeedback(value) { await importJSON({name:'video.json',size:0,text:async()=>JSON.stringify(value)}); },
+      async restoreAgentFeedback(value) { await globalThis.ThisbitWeb.loadAgentFeedback({image:typeof value.image==='string'?value.image:value.image.dataUrl||${JSON.stringify(image)},name:'saved-feedback',feedback:value}); },
+      rawFeedback() { return feedback(); },
+      feedback() { return F.exportImage(feedbackDocument(doc,'none'),'none'); }
+    };
+  `;
+  assert.match(production, /\}\)\(\);\s*$/, 'app IIFE must have an identifiable end');
+  vm.runInContext(production.replace(/\}\)\(\);\s*$/, exposure + '\n})();'), sandbox, { filename: 'app.js' });
+  const actual = sandbox.__movementTest;
+  return { ...actual, state: () => plain(actual.state()), rawFeedback: () => plain(actual.rawFeedback()), feedback: () => {
+    const {$schema, schemaVersion, tool, exportedAt, image:descriptor, ...value} = plain(actual.feedback());
+    return {...value, objects:legacyObjects(value.objects)}; // Geometry fixtures compare content; numbered exports are covered directly below.
+  }, noteBounds: id => plain(actual.noteBounds(id)), serialized: () => plain(actual.serialized()) };
+}
+
+function fixture(app) {
+  const value = layout.create(200, 100, [
+    { label: 'child', bounds: rect(10, 10, 50, 90) },
+    { label: 'parent', bounds: rect(10, 10, 90, 90) }
+  ]);
+  const parent = value.groups.find(group => group.label === 'parent').id;
+  const child = value.groups.find(group => group.label === 'child').id;
+  app.load(value);
+  return { parent, child };
+}
+
+test('child ownership survives nested image/video imports, reset, deletion and undo/redo',async()=>{
+  const source=rect(10,10,50,50),target=rect(60,10,100,50),inside=rect(70,20,90,40);
+  const app=appHarness(),value=layout.create(200,100,[{label:'component',bounds:source}]),id=value.groups.find(g=>g.label==='component').id;
+  app.load(value);app.select(id);app.moveSelection(target);app.annotateAt(inside,'child');
+  let state=app.state(),child=state.notes.find(n=>n.text==='child'),parent=state.notes.find(n=>n.movementSource);
+  assert.deepEqual(child.parent,{source,state:'child',groupId:id});
+  const exported=app.rawFeedback(),restored=appHarness();await restored.importFeedback(exported);
+  assert.deepEqual(restored.rawFeedback().objects,exported.objects);
+  assert.equal(restored.state().notes.find(n=>n.text==='child').parent.state,'child');
+  const deeper=structuredClone(exported);deeper.objects[0].children[0].children=[{id:'grandchild',kind:'region',source:rect(72,22,78,28),annotations:[{number:3,text:'grandchild'}]}];
+  const deepRestored=appHarness();await deepRestored.importFeedback(deeper);
+  assert.deepEqual(deepRestored.rawFeedback().objects[0].children.map(n=>n.annotations[0].text),['child','grandchild']);
+  app.reset();assert.equal(app.state().notes.find(n=>n.text==='child').parent,undefined);
+  app.undo();assert.equal(app.state().notes.find(n=>n.text==='child').parent.state,'child');
+  app.redo();assert.equal(app.state().notes.find(n=>n.text==='child').parent,undefined);
+  app.undo();app.select(id);app.moveSelection(source);assert.equal(app.state().notes.find(n=>n.text==='child').parent,undefined);
+  app.undo();app.removeNote(parent.id);assert.equal(app.state().notes.find(n=>n.text==='child').parent,undefined);
+  app.undo();assert.equal(app.state().notes.find(n=>n.text==='child').parent.state,'child');
+  const video=feedback.exportVideo({source:'test.mp4',durationMs:1000,frames:[{image,id:'frame',timestampUs:0,movements:[{source,destination:target}],notes:[
+    {source:target,movementSource:source,text:''},{source:inside,text:'child',parent:{source,state:'child'}}
+  ]}]},'embedded','2026-10-21T00:00:00Z');
+  assert.equal(video.objects.length,2);assert(video.objects.every(o=>!o.children));
+  feedback.validateVideoRecognitionIndex(video);
+  const restoredVideo=appHarness();await restoredVideo.importVideoFeedback(video);
+  assert.deepEqual(restoredVideo.rawFeedback().objects,video.objects);
+  assert.deepEqual(restoredVideo.rawFeedback().frames[0].feedback.objects,video.frames[0].feedback.objects);
+});
+
+test('partial overlap confirmation groups siblings stably and legacy project parents migrate once',async()=>{
+  const source=rect(10,10,50,50),target=rect(60,10,100,50),app=appHarness(),value=layout.create(200,100,[{label:'component',bounds:source}]),id=value.groups.find(g=>g.label==='component').id;
+  app.load(value);app.select(id);app.moveSelection(target);app.annotateAt(rect(70,20,80,30),'first');app.annotateAt(null,'unrelated');app.annotateAt(rect(90,20,110,40),'partial');
+  const pending=app.state().notes.find(n=>n.text==='partial');assert.equal(pending.parent.state,'unknown');assert.throws(()=>app.rawFeedback(),/归属/);
+  app.resolveParent(pending.id,true);assert.deepEqual(app.state().notes.map(n=>n.text),['','first','partial','unrelated']);
+  const serialized=app.serialized(),first=serialized.notes.find(n=>n.text==='first');first.parentSource=first.parent.source;first.parentState=first.parent.state;delete first.parent;
+  await app.restore(serialized);const saved=app.serialized().notes.find(n=>n.text==='first');assert.equal(saved.parent.state,'child');assert(!Object.hasOwn(saved,'parentSource'));
+  const invalid=app.serialized();invalid.notes[1].parent={source};await assert.rejects(app.restore(invalid),/parent/);
+});
+
+test('identical source components release ambiguous ownership in both editor and export',()=>{
+  const source=rect(10,10,50,50),target=rect(110,10,150,50),inside=rect(120,20,140,40);
+  const value=layout.create(200,100,[]),first=layout.addRegion(value,source),second=layout.addRegion(value,source);
+  layout.transform(value,first,rect(60,10,100,50));
+  layout.transform(value,second,target);
+  assert.equal(layout.validate(value,200,100),true);
+  assert.equal(layout.trackedMovements(value).length,2);
+  const app=appHarness();app.load(value);app.annotateAt(inside,'ambiguous child');
+  const state=app.state(),child=state.notes.find(note=>note.text==='ambiguous child');
+  assert(child);
+  assert.equal(child.parent,undefined,'a group ID must not bypass source ambiguity in the editor');
+  const exported=app.rawFeedback();
+  assert(exported.objects.every(object=>!Object.hasOwn(object,'children')));
+  assert(exported.objects.some(object=>object.annotations.some(annotation=>annotation.text===child.text)));
+  assert.deepEqual(app.state(),state,'export must preserve the normalized editor state');
+});
+
+function groupPieces(value, id) {
+  const members = new Set(value.groups.find(group => group.id === id).pieces);
+  return value.pieces.filter(piece => members.has(piece.id));
+}
+
+test('importing single-movement JSON restores an empty movement between ordinary notes',async()=>{
+  const app=appHarness(),source=rect(10,10,30,30),destination=rect(60,20,100,30);
+  const value=feedback.exportImage({image,movements:[{source,destination}],notes:[
+    {source:null,text:'先写普通批注'}, {source:destination,movementSource:source,text:''}, {source:null,text:'后写普通批注'}
+  ]},true);
+  await app.importFeedback(value);
+  assert.deepEqual(app.state().notes.map(n=>n.text),['先写普通批注','','后写普通批注']);
+  assert.deepEqual(app.state().notes[1].movementSource,source);
+});
+
+test('deleting empty or written movement notes restores position and size in one undo step',()=>{
+  for(const text of ['', '恢复这条位移']) {
+    const app=appHarness(),{parent}=fixture(app);
+    app.select(parent);app.transform(rect(100,10,196,98));
+    if(text)app.annotate(parent,text);
+    const moved=app.state(),note=moved.notes.find(n=>n.movementSource);
+    app.removeNote(note.id);
+    const restored=app.state();
+    assert.deepEqual(layout.bounds(restored.layout,parent),rect(10,10,90,90));
+    assert.deepEqual(restored.notes,[]);assert.deepEqual(restored.markers,[]);
+    assert.deepEqual(app.feedback().objects,[]);
+    app.undo();assert.deepEqual(app.state(),moved);
+    app.redo();assert.deepEqual(app.state(),restored);
+  }
+});
+
+test('deleting a parent movement preserves an independently moved child and its opinion',()=>{
+  const app=appHarness(),{parent,child}=fixture(app);
+  app.select(parent);app.transform(rect(100,10,180,90));app.annotate(parent,'删除父位移');
+  app.select(child);app.transform(rect(20,10,60,90));app.annotate(child,'保留子位移');
+  const moved=app.state(),childPieces=groupPieces(moved.layout,child);
+  app.removeNote(moved.notes.find(n=>n.text==='删除父位移').id);
+  const restored=app.state();
+  assert.deepEqual(groupPieces(restored.layout,child),childPieces);
+  for(const piece of groupPieces(restored.layout,parent))assert.deepEqual(piece.to,piece.source);
+  assert.equal(restored.notes.filter(n=>n.text==='保留子位移').length,1);
+  assert.equal(restored.markers.length,1);
+  app.undo();assert.deepEqual(app.state(),moved);
+});
+
+test('native nested parent and child feedback imports and reexports the same original source frames and targets', async () => {
+  const app = appHarness();
+  const objects = [
+    { source: rect(10, 10, 90, 90), movements: [{ to: rect(100, 10, 180, 90) }], annotations: ['整体移到右侧'] },
+    { source: rect(10, 10, 50, 90), movements: [{ to: rect(20, 10, 60, 90) }], annotations: ['左边子组件单独调整'] }
+  ];
+  await app.importFeedback({ annotationSpace: 'result', image: image, objects });
+  assert.deepEqual(app.feedback(), { annotationSpace: 'result', objects });
+  const state = app.state();
+  assert.deepEqual(state.markers.map(marker => ({ source: marker.source, destination: marker.destination })), objects.map(object => ({ source: object.source, destination: object.movements[0].to })));
+  assert.deepEqual(state.notes.map(note => note.text), ['整体移到右侧', '左边子组件单独调整']);
+  assert.equal(layout.validate(state.layout), true);
+});
+
+test('the editor imports versioned and legacy image feedback and rejects unknown versions before replacing work', async () => {
+  const app = appHarness();
+  const source = rect(10, 10, 40, 30), destination = rect(50, 10, 80, 30);
+  const current = feedback.exportImage({image, movements:[{source,destination}], notes:[{source,movementSource:source,text:'保留位移'}]});
+  await app.importFeedback({...current,image:imageFormat.descriptor(image,'embedded')});
+  assert.deepEqual(app.feedback().objects, legacyObjects(current.objects));
+  const before = app.state();
+  await assert.rejects(app.importFeedback({...current,schemaVersion:'feedback-minimal-99'}), /version/);
+  assert.deepEqual(app.state(), before);
+  await app.importFeedback({annotationSpace:'result',image,changes:[{from:source,to:destination}],annotations:[{change:0,text:'旧移动'},{point:{x:1,y:2},text:'旧点'}]});
+  assert.deepEqual(app.feedback().objects, [
+    {source,movements:[{to:destination}],annotations:['旧移动']},
+    {source:rect(1,2,1,2),movements:[],annotations:['旧点']}
+  ]);
+});
+
+test('reopening saved Agent feedback preserves its original export metadata in a manual backup', async () => {
+  const app = appHarness();
+  const current = feedback.exportImage({image, toolVersion:'0.10.0',movements:[],notes:[{source:null,text:'已保存'}]}, true, '2026-10-15T09:30:00+08:00');
+  await app.restoreAgentFeedback(current);
+  assert.deepEqual({...app.rawFeedback(),image:null},{...current,image:null});
+  current.objects[0].id='saved-object';current.objects[0].annotations[0].number=7;
+  await app.restoreAgentFeedback(current);
+  assert.deepEqual({...app.rawFeedback(),image:null},{...current,image:null},'a completed backup keeps sparse numbers and file IDs exactly as saved');
+});
+
+test('numbered feedback restores note order before project saving and reexporting', async () => {
+  const app=appHarness(),source=rect(10,10,40,30),destination=rect(50,10,80,30);
+  const current=feedback.exportImage({image,notes:[],movements:[]});
+  current.objects=[
+    {id:'movement',source,movements:[{to:destination}],annotations:[{number:7,text:'移动在后'}]},
+    {id:'global',source:null,movements:[],annotations:[{number:1,text:'全局在前'}]},
+    {id:'point',source:rect(2,3,2,3),movements:[],annotations:[{number:4,text:'点在中间'}]}
+  ];
+  current.objects=current.objects.map(feedback.typedObject);
+  await app.importFeedback(current);
+  assert.deepEqual(app.state().notes.map(note=>note.text),['全局在前','点在中间','移动在后']);
+  const project=app.serialized();await app.restore(project);
+  assert.deepEqual(app.state().notes.map(note=>note.text),['全局在前','点在中间','移动在后']);
+  assert.deepEqual(app.rawFeedback().objects.flatMap(object=>object.annotations).sort((a,b)=>a.number-b.number),[
+    {number:1,text:'全局在前'},{number:2,text:'点在中间'},{number:3,text:'移动在后'}
+  ]);
+  const retained=app.state();
+  await assert.rejects(app.importFeedback({...current,objects:[current.objects[0],{...current.objects[1],id:'movement'}]}),/duplicate/);
+  await assert.rejects(app.importFeedback({...current,objects:[current.objects[0],{...current.objects[1],annotations:[{number:7,text:'冲突'}]}]}),/duplicate/);
+  assert.deepEqual(app.state(),retained);
+});
+
+test('detaching a returned child preserves the original parent trajectory while reset restores only the remaining pixels', () => {
+  const app = appHarness(), { parent, child } = fixture(app);
+  app.select(parent); app.transform(rect(100, 10, 180, 90));
+  app.select(child); app.transform(rect(10, 10, 50, 90));
+  const detached = app.state(), marker = detached.markers.find(item => item.groupId === parent);
+  assert.deepEqual(layout.bounds(detached.layout, parent), rect(140, 10, 180, 90));
+  assert.deepEqual(layout.bounds(detached.layout, child), rect(10, 10, 50, 90));
+  assert.deepEqual(marker.source, rect(10, 10, 90, 90), 'native trajectories retain their original frames independently from detached pixel pieces');
+  assert.deepEqual(marker.destination, rect(100, 10, 180, 90));
+  assert.deepEqual(detached.raw.find(item => item.groupId === parent).destination, marker.destination);
+  assert.equal(detached.markers.some(item => item.groupId === child), false, 'a child at its original location has no active movement arrow');
+  const childBeforeReset = groupPieces(detached.layout, child);
+  app.select(parent); app.reset();
+  const restored = app.state();
+  assert.deepEqual(layout.bounds(restored.layout, parent), rect(50, 10, 90, 90));
+  assert.deepEqual(groupPieces(restored.layout, child), childBeforeReset);
+  for (const piece of groupPieces(restored.layout, parent)) assert.deepEqual(piece.to, piece.source, 'reset must preserve each remaining slice size');
+  assert.deepEqual(layout.movements(restored.layout), []);
+  assert.deepEqual(restored.markers, []);
+  assert.equal(layout.validate(restored.layout), true);
+});
+
+test('parent and detached-child arrow notes keep their own source scopes through project reload, reset and history', async () => {
+  const app = appHarness(), { parent, child } = fixture(app);
+  app.select(parent); app.transform(rect(100, 10, 180, 90)); app.annotate(parent, 'parent right half');
+  app.select(child); app.transform(rect(20, 10, 60, 90)); app.annotate(child, 'independent child');
+  const detached = app.state(), parentNote = detached.notes.find(note => note.text === 'parent right half');
+  assert.deepEqual(parentNote.movementSource, rect(10, 10, 90, 90));
+  assert.deepEqual(parentNote.source, rect(100, 10, 180, 90), 'the parent note stays on its original destination frame when a child detaches');
+  const moved = app.feedback().objects;
+  assert.deepEqual(moved.find(object => object.annotations.includes('parent right half')), {
+    source: rect(10, 10, 90, 90), movements: [{ to: rect(100, 10, 180, 90) }], annotations: ['parent right half']
+  });
+  assert.deepEqual(moved.find(object => object.annotations.includes('independent child')), {
+    source: rect(10, 10, 50, 90), movements: [{ to: rect(20, 10, 60, 90) }], annotations: ['independent child']
+  });
+  assert.equal(moved.filter(object => object.annotations.includes('parent right half')).length, 1);
+  assert.equal(moved.filter(object => object.annotations.includes('independent child')).length, 1);
+  const savedDetached = app.serialized(); await app.restore(savedDetached);
+  assert.deepEqual(app.feedback().objects, moved, 'project validation must accept retained parent frames after a child detaches');
+  const childBeforeReset = groupPieces(detached.layout, child);
+  app.select(parent); app.reset();
+  const parentRestored = app.state(), feedbackRestored = app.feedback();
+  assert.deepEqual(groupPieces(parentRestored.layout, child), childBeforeReset);
+  assert.deepEqual(feedbackRestored.objects.find(object => object.annotations.includes('parent right half')), {
+    source: rect(10, 10, 90, 90), movements: [], annotations: ['parent right half']
+  });
+  assert.deepEqual(feedbackRestored.objects.find(object => object.annotations.includes('independent child')), {
+    source: rect(10, 10, 50, 90), movements: [{ to: rect(20, 10, 60, 90) }], annotations: ['independent child']
+  });
+  app.undo(); assert.deepEqual(app.feedback(), { annotationSpace: 'result', objects: moved });
+  app.redo(); assert.deepEqual(app.feedback(), feedbackRestored);
+  app.select(child); app.reset();
+  assert.deepEqual(layout.movements(app.state().layout), []);
+  assert.deepEqual(app.feedback().objects, [
+    { source: rect(10, 10, 90, 90), movements: [], annotations: ['parent right half'] },
+    { source: rect(10, 10, 50, 90), movements: [], annotations: ['independent child'] }
+  ]);
+});
+
+test('moving A, then B, then A again preserves first-creation trajectory and note order through history', () => {
+  const app = appHarness(), aSource = rect(10, 10, 30, 90), bSource = rect(70, 10, 90, 90);
+  const value = layout.create(200, 100, [{ label: 'A', bounds: aSource }, { label: 'B', bounds: bSource }]);
+  const a = value.groups.find(group => group.label === 'A').id, b = value.groups.find(group => group.label === 'B').id;
+  app.load(value); app.select(a); app.moveSelection(rect(100, 10, 120, 90));
+  app.select(b); app.moveSelection(rect(160, 10, 180, 90));
+  const firstOrder = app.state(), before = app.feedback();
+  app.select(a); app.moveSelection(rect(110, 10, 130, 90));
+  const repeated = app.state(), after = app.feedback();
+  assert.deepEqual(repeated.raw.map(movement => movement.source), [aSource, bSource], 'updating an existing trajectory must not append it behind later movements');
+  assert.deepEqual(after.objects.map(object => object.source), [aSource, bSource]);
+  assert.deepEqual(repeated.notes.map(note => note.id), firstOrder.notes.map(note => note.id));
+  assert.deepEqual(after.objects[0].movements, [{ to: rect(110, 10, 130, 90) }]);
+  app.undo(); assert.deepEqual(app.feedback(), before); app.redo(); assert.deepEqual(app.feedback(), after);
+});
+
+test('one multi-selection note follows disjoint components and exports its result bounds independently from the actual trajectories', async () => {
+  const app = appHarness();
+  const value = layout.create(200, 100, [
+    { label: 'A', bounds: rect(10, 10, 30, 90) },
+    { label: 'B', bounds: rect(70, 10, 90, 90) }
+  ]);
+  const a = value.groups.find(group => group.label === 'A').id, b = value.groups.find(group => group.label === 'B').id;
+  app.load(value); app.select(a); app.addToSelection(b); app.annotateSelection('move both components together');
+  const original = app.state();
+  assert.equal(original.notes.length, 1, 'one selection comment remains one UI note');
+  const noteId = original.notes[0].id;
+  assert.deepEqual(original.notes[0].groupIds, [a, b], 'the note must reference actual components rather than a temporary union group');
+  assert.deepEqual(original.notes[0].source, rect(10, 10, 90, 90));
+  app.moveSelection(rect(100, 10, 180, 90));
+  const moved = app.state(), movedFeedback = app.feedback();
+  assert.equal(moved.notes.length, 3, 'each newly created trajectory gets its own chronological empty movement note');
+  assert.deepEqual(moved.notes[0].source, rect(100, 10, 180, 90));
+  assert.deepEqual(app.noteBounds(noteId), rect(100, 10, 180, 90));
+  assert.deepEqual(moved.notes[0].groupIds, [a, b]);
+  assert.equal(moved.layout.groups.length, 2, 'temporary multi-selection geometry must not remain in the document');
+  assert.deepEqual(movedFeedback.objects.slice().sort((left, right) => left.source.x1 - right.source.x1), [
+    { source: rect(10, 10, 30, 90), movements: [{ to: rect(100, 10, 120, 90) }], annotations: [] },
+    { source: rect(70, 10, 90, 90), movements: [{ to: rect(160, 10, 180, 90) }], annotations: [] },
+    { source: rect(100, 10, 180, 90), movements: [], annotations: ['move both components together'] }
+  ], 'only movementSource links text to a trajectory; an ordinary note uses its current result rectangle');
+  app.undo();
+  assert.deepEqual(app.state().notes, original.notes);
+  assert.deepEqual(app.noteBounds(noteId), rect(10, 10, 90, 90));
+  app.redo(); assert.deepEqual(app.state().notes, moved.notes); assert.deepEqual(app.feedback(), movedFeedback);
+  const saved = JSON.parse(JSON.stringify(app.serialized()));
+  assert.deepEqual(saved.notes[0].groupIds, [a, b]);
+  await app.restore(saved);
+  assert.deepEqual(app.state().notes, moved.notes); assert.deepEqual(app.noteBounds(noteId), rect(100, 10, 180, 90));
+  assert.deepEqual(app.feedback(), movedFeedback);
+  const invalid = JSON.parse(JSON.stringify(saved)); invalid.notes[0].groupIds = [a, 'missing-component'];
+  await assert.rejects(() => app.restore(invalid), /组件|引用|不存在/, 'project restore must reject references to nonexistent components');
+});

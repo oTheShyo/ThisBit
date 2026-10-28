@@ -1,0 +1,41 @@
+{
+  "name": "thisbit-mcp",
+  "version": "0.2.0",
+  "description": "Thisbit（改这里）MCP 连接器：把本地 thisbit-cli 的 Agent 接口封装为 MCP 工具，让 AI 读取用户在截图上的批注与布局调整",
+  "type": "module",
+  "main": "mcp-server.mjs",
+  "bin": {
+    "thisbit-mcp": "mcp-server.mjs"
+  },
+  "files": [
+    "mcp-server.mjs",
+    "icon.svg",
+    "skills",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "thisbit",
+    "annotation",
+    "screenshot",
+    "ui",
+    "design",
+    "feedback"
+  ],
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Inginnng/Thisbit.git",
+    "directory": "connector"
+  },
+  "homepage": "https://github.com/Inginnng/Thisbit/tree/main/connector",
+  "bugs": {
+    "url": "https://github.com/Inginnng/Thisbit/issues"
+  }
+}

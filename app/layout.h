@@ -1,0 +1,72 @@
+#pragma once
+#include <QImage>
+#include <QJsonArray>
+#include <QJsonObject>
+#include <QRectF>
+#include <QStringList>
+#include <QVector>
+#include <optional>
+class QPainter;
+namespace h2d {
+struct Candidate;
+constexpr int MaxLayoutPieces = 8192;
+constexpr int MaxLayoutGroups = 512;
+constexpr int MaxLayoutMovements = MaxLayoutPieces + MaxLayoutGroups;
+struct LayoutPiece {
+    QString id;
+    QRectF source, destination;
+    bool operator==(const LayoutPiece &) const = default;
+};
+struct LayoutGroup {
+    QString id, label, origin;
+    // Source-space bounds of the region. A region made by hand records them at creation time so
+    // that removing a piece later cannot move it; only projects saved before 0.9.0 leave it empty,
+    // which is why validateLayout accepts either. Both layout schemas allow the same two cases.
+    QRectF originalBounds;
+    QStringList pieces;
+    bool operator==(const LayoutGroup &) const = default;
+};
+struct LayoutMovement {
+    QString groupId; // Empty only for a legacy pixel change without a matching selectable group.
+    QRectF source, destination;
+    bool operator==(const LayoutMovement &) const = default;
+};
+struct LayoutState {
+    QSize canvas;
+    QVector<LayoutPiece> pieces;
+    QVector<LayoutGroup> groups;
+    // Missing history in old projects falls back to reconstructed pixel changes.
+    std::optional<QVector<LayoutMovement>> movements;
+    bool operator==(const LayoutState &) const = default;
+};
+struct LayoutChoice {
+    QString id, label;
+    QRectF bounds;
+};
+struct LayoutSequence {
+    QRectF source;
+    QVector<QRectF> destinations;
+};
+LayoutState createLayout(QSize size, const QVector<Candidate> &candidates);
+QString addLayoutRegion(LayoutState &state, QRectF currentBounds,
+                        const QString &label = QT_TRANSLATE_NOOP("Thisbit", "手动区域"));
+QRectF layoutBounds(const LayoutState &state, const QString &groupId);
+QVector<LayoutChoice> layoutChoices(const LayoutState &state, QPointF point);
+QRectF constrainLayoutRect(QRectF rect, QSize canvas);
+QRectF resizeLayoutRect(QRectF rect, QPointF delta, int handle, QSize canvas);
+QRectF scaleLayoutRect(QRectF rect, double factor, QSize canvas);
+// Map a rectangle from its old frame (before) into a new frame (after),
+// preserving relative position and size. Used to transform child groups when
+// a multi-selection union is dragged or resized as a block.
+QRectF transformedRectangle(QRectF r, QRectF before, QRectF after);
+void transformLayoutGroup(LayoutState &state, const QString &id, QRectF destination);
+QVector<LayoutMovement> layoutMovements(const LayoutState &state);
+void paintLayout(QPainter &painter, const QImage &original, const LayoutState &state);
+QImage renderLayout(const QImage &original, const LayoutState &state);
+void validateLayout(const LayoutState &state, QSize originalSize);
+QJsonArray exportLayoutChanges(const LayoutState &state);
+LayoutState importLayoutChanges(const QJsonArray &changes, QSize originalSize);
+LayoutState importLayoutSequences(const QVector<LayoutSequence> &sequences, QSize originalSize);
+QJsonObject exportLayout(const LayoutState &state);
+LayoutState importLayout(const QJsonObject &json, QSize originalSize);
+} // namespace h2d

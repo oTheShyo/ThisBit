@@ -1,0 +1,38 @@
+*.sh text eol=lf
+*.yml text eol=lf
+# Native sources and their contract fixtures use the same bytes on every host.
+app/*.cpp text eol=lf
+app/*.h text eol=lf
+app/*.mm text eol=lf
+app/*.ps1 text eol=lf
+app/translations/*.ts text eol=lf
+tests/*.cpp text eol=lf
+tests/*.h text eol=lf
+tests/*.mjs text eol=lf
+tests/fixtures/*.json text eol=lf
+schema/*.json text eol=lf
+scripts/*.py text eol=lf
+connector/*.mjs text eol=lf
+docs/*.md text eol=lf
+# The web build concatenates web/src sources and embeds the brand art and
+# shared icons verbatim, so their line endings are part of the bytes in
+# web/Thisbit.html, web/Thisbit.mcp.html and the published web packages.
+# Pin them so Windows, macOS, Linux and CI build the same files; the brand
+# art is embedded base64-encoded and therefore stays CRLF.
+web/** text eol=lf
+assets/ui-icons/** text eol=lf
+assets/brand/thisbit-lockup.svg text eol=crlf
+assets/brand/thisbit-lockup-light.svg text eol=crlf
+assets/icons/thisbit.svg text eol=crlf
+# The legal texts are copied into the web packages byte for byte, so they are
+# pinned too; otherwise a Windows checkout (core.autocrlf) and Linux CI would
+# ship different ZIPs for the same source.
+LICENSE text eol=lf
+NOTICE text eol=lf
+LICENSING.md text eol=lf
+COMMERCIAL-LICENSE.md text eol=lf
+TRADEMARK-POLICY.md text eol=lf
+packaging/THIRD-PARTY-NOTICES.md text eol=lf
+packaging/licenses/** -text -whitespace
+# Vendored third-party sources stay byte-identical to the upstream release.
+third_party/** -text -whitespace

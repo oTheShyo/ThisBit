@@ -1,0 +1,232 @@
+#pragma once
+#include "canvas.h"
+#include "settings.h"
+#include "videoproject.h"
+#include <QKeySequence>
+#include <QMap>
+#include <QPointer>
+#include <QWidget>
+class QLabel;
+class QScrollArea;
+class QVBoxLayout;
+class QHBoxLayout;
+class QPushButton;
+class QStackedWidget;
+class QShortcut;
+class QPlainTextEdit;
+namespace h2d {
+class LayoutCanvas;
+class ImageArea;
+class LayoutInspector;
+class ExplosionWave;
+class GuideOverlay;
+class VideoPlayback;
+class OcrEngine;
+class Editor final : public QWidget {
+    Q_OBJECT
+  public:
+    explicit Editor(QWidget *parent = nullptr);
+    void setDocument(Document document, const QString &projectPath = {});
+    void setAgentSession(bool active);
+    bool hasUnsavedChanges();
+    QByteArray agentFeedback(bool embed);
+    FeedbackBundle agentFeedbackBundle(FeedbackExportOptions options);
+    void setPageContext(const QString &page);
+    void setPreferences(const AppSettings &settings);
+    void setShortcuts(const QMap<QString, QKeySequence> &bindings);
+    const Document &document() const {
+        return doc_;
+    }
+    Canvas *canvas() const {
+        return canvas_;
+    }
+    bool hasDocument() const {
+        return !doc_.image.isNull();
+    }
+    bool allowReplace();
+    // Closing is not the same question as replacing: the user is walking away, not
+    // choosing something else, and being stopped every single time about a screenshot
+    // that was only ever going to be thrown away is what "don't ask again" is for.
+    bool confirmDiscardOnClose();
+    bool saveProject();
+    void openFile(const QString &path = {});
+    // Throws on invalid input; used by CLI requests without swallowing errors in a dialog.
+    void loadMedia(const QString &path);
+    void setVideoProject(VideoProject project, const QString &projectPath = {});
+    bool hasVideo() const { return video_.has_value(); }
+    int totalAnnotationCount();
+    QByteArray projectBytes();
+    VideoProject videoProject();
+    // Opens the annotation window with nothing in it, so a picture can be brought in
+    // by dropping it on the window: annotating a picture that is already on disk is a
+    // different job from taking a new screenshot, and it should not have to start
+    // with one.
+    void openEmpty();
+    void pasteImage();
+    void exportJson();
+    void fit();
+    void showGuide();
+    void dismissGuide();
+    bool guideActive() const;
+    void explode();
+    bool explosionActive() const {
+        return explosionActive_;
+    }
+    LayoutCanvas *layoutCanvas() const {
+        return layoutCanvas_;
+    }
+  signals:
+    void captureRequested();
+    void agentFinishRequested();
+    void agentCancelRequested();
+    void guideDismissed();
+    void hiddenToTray();
+    void toolbarSettingsRequested();
+    void settingsRequested();
+    // The editor changed a preference itself — the "don't ask again" box does — and the
+    // owner has to write it down, or the answer would only last until the next start.
+    void preferencesChanged();
+    void exportPreferencesChanged(h2d::ImageExportMode imageMode, bool copyTextWithImage);
+
+  protected:
+    bool eventFilter(QObject *, QEvent *) override;
+    void closeEvent(QCloseEvent *) override;
+    void resizeEvent(QResizeEvent *) override;
+    void changeEvent(QEvent *) override;
+    void dragEnterEvent(QDragEnterEvent *) override;
+    void dropEvent(QDropEvent *) override;
+
+  private:
+    void editNote(Note note, bool fresh, QPoint global);
+    // A child annotation needs its component's card above it, so an unannotated
+    // movement gets one before the child is inserted.
+    std::optional<Note> missingMovementNote(const QRectF &source) const;
+    void scheduleRegionRecognition();
+    void updateRecognizedText(const QString &id, const QJsonObject &text);
+    void recognizeNextRegion();
+    QByteArray recognitionKey(const Note &note) const;
+    void cancelRegionRecognition();
+    void changed(bool contentChanged = true);
+    void renderNotes();
+    // Rebuilds every label of the permanent chrome. Called from the constructor
+    // and again whenever the interface language changes.
+    void retranslate();
+    // What the window says while there is no picture in it, and whether it says it.
+    void updateEmptyState();
+    void updateToolLabels();
+    void updatePageContextLabel();
+    void beginNoteEdit(const QString &id);
+    void finishNoteEdit();
+    void cancelNoteEdit();
+    void focusNote(const QString &id);
+    void revealNote(const QString &id);
+    void collapseOtherNotes(const QString &id);
+    void addGlobalNote();
+    void editMovement(QRectF source, QRectF destination);
+    void addManualRegion(QRect area);
+    void toggleAnnotations();
+    void updateAnnotationVisibility();
+    void copyJson();
+    void copyJsonText();
+    QPushButton *makeCopyJsonTextOptions(QWidget *parent, const QString &name);
+    void setCopyJsonTextWithImage(bool enabled);
+    void showJsonHelp();
+    void updateToolbar();
+    void toast(const QString &message);
+    void toggleFullscreen();
+    void updateFullscreenButton();
+    void panImage(QPoint delta);
+    void stopViewportPan();
+    void showContext(QPoint global);
+    void copyImage();
+    void saveImage(bool annotated = false);
+    void removeSelected();
+    void deleteNote(const QString &id, std::optional<QRectF> movementSource = {});
+    void setMode(Canvas::Mode mode);
+    void updateControls();
+    void clearVideo();
+    void commitVideoFrame();
+    void displayVideoFrame(const QImage &image, qint64 timestampUs);
+    void showVideoPreview(const QSize &size, qint64 timestampUs);
+    bool ensureVideoAnnotationFrame();
+    void reviewVideoFrame(qint64 timestampUs);
+    void updateVideoFrames();
+    void syncVideoGeometry();
+    void detectCurrentFrame(int generation);
+    QByteArray feedbackBytes(bool embed, bool compress = false);
+    void undo();
+    void redo();
+    void zoom(double value);
+    void zoomAt(double value, QPointF viewportAnchor);
+    void showError(const QString &text);
+    QString coords(const Note &note) const;
+    GuideOverlay *guide_ = nullptr;
+    QWidget *agentBanner_ = nullptr;
+    bool agentSession_ = false;
+    Document doc_;
+    std::optional<VideoProject> video_;
+    qint64 videoFrameUs_ = -1;
+    bool switchingVideoFrame_ = false;
+    bool videoPreview_ = false;
+    VideoPlayback *videoPlayback_ = nullptr;
+    AppSettings preferences_;
+    QPushButton *copyJsonTextOptions_ = nullptr;
+    struct Snapshot {
+        QVector<Note> notes;
+        std::optional<LayoutState> layout;
+    };
+    QVector<Snapshot> undoHistory_, redoHistory_;
+    void remember();
+    void restore(Snapshot snapshot);
+    void updateLayoutControls();
+    void setExplosionActive(bool enabled);
+    void setComponentEditing(bool enabled);
+    void resetLayoutTools();
+    void switchCanvas(QWidget *target);
+    Canvas *canvas_;
+    LayoutCanvas *layoutCanvas_ = nullptr;
+    LayoutInspector *layoutInspector_ = nullptr;
+    ExplosionWave *wave_ = nullptr;
+    QScrollArea *inspectorScroll_ = nullptr;
+    QStackedWidget *detailsStack_;
+    std::optional<LayoutState> splitBaseline_;
+    bool explosionActive_ = false;
+    bool componentEditing_ = false;
+    QMap<QString, QPointer<QWidget>> noteCards_;
+    QMap<QString, QPointer<QPlainTextEdit>> noteEditors_;
+    QString editingId_, draftId_;
+    Snapshot editingBaseline_;
+    bool editingWasDirty_ = false, renderingNotes_ = false, finishingEdit_ = false;
+    bool editingTimestampUpdated_ = false;
+    bool annotationsVisible_ = true;
+    QMap<QString, QPushButton *> outputButtons_;
+    ImageArea *imageScroll_;
+    QScrollArea *notesScroll_;
+    QWidget *notesPanel_, *noteContainer_;
+    QVBoxLayout *noteLayout_;
+    QHBoxLayout *dock_;
+    QWidget *inspectorSeparator_ = nullptr;
+    QLabel *meta_, *hint_, *noteCount_, *emptyNotes_;
+    // The middle of the window while it has no picture: a line saying how a picture
+    // arrives, and a button that opens one instead of waiting for a drop.
+    QWidget *emptyWell_ = nullptr;
+    QLabel *emptyHint_ = nullptr;
+    QPushButton *emptyImport_ = nullptr;
+    QPushButton *undo_, *redo_, *zoom_, *notesToggle_, *explosion_, *hideAnnotations_;
+    QVector<QPushButton *> modes_;
+    QMap<QString, QShortcut *> shortcuts_;
+    QPushButton *fullscreen_ = nullptr;
+    Qt::WindowStates beforeFullscreenState_;
+    QRect beforeFullscreenGeometry_;
+    QPointF beforeFullscreenOrigin_;
+    bool viewportPanning_ = false;
+    QPoint viewportPanPosition_;
+    bool fitted_ = true;
+    int generation_ = 0;
+    int recognitionGeneration_ = 0;
+    OcrEngine *regionOcr_ = nullptr;
+    QMap<QString, QByteArray> recognizedRegions_;
+    bool recognitionScheduled_ = false;
+    QString projectPath_;
+};
+} // namespace h2d

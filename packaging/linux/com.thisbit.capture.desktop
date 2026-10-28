@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+Name=Thisbit
+Name[zh_CN]=Thisbit · 改这里
+Comment=Screenshot annotation and visual feedback
+Exec=Thisbit %f
+Icon=thisbit
+Terminal=false
+Categories=Graphics;Utility;
+MimeType=application/x-thisbit;
+StartupWMClass=Thisbit
+Actions=Capture;
+
+[Desktop Action Capture]
+Name=Capture screen
+Name[zh_CN]=截图
+Exec=Thisbit --capture

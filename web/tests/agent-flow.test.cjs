@@ -1,0 +1,154 @@
+'use strict';
+// A real image travels through CLI -> browser -> explicit submit -> waiting CLI.
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const crypto = require('node:crypto');
+const os = require('node:os');
+const {execFile} = require('node:child_process');
+const {createPreviewServer} = require('../preview-server.cjs');
+const {downloadText,readExportJson} = require('./export-test-utils.cjs');
+const {promisify} = require('node:util');
+const execute = promisify(execFile);
+const root = path.resolve(__dirname, '../..');
+const output = path.join(__dirname, 'output/agent-flow');
+const cli = path.join(root, 'web/agent.cjs');
+const first = values => values.filter(Boolean).find(value => fs.existsSync(value));
+const image = first([process.env.THISBIT_TEST_IMAGE, path.resolve(root, '../Thisbit宣传/原图/游戏修改前.png')]);
+const modulePath = first([process.env.THISBIT_PLAYWRIGHT_MODULE, path.resolve(root, '../Thisbit宣传/动画/node_modules/playwright-core'), path.join(root, 'node_modules/playwright-core')]);
+const executablePath = first([process.env.THISBIT_BROWSER_PATH, 'C:/Users/InGing/AppData/Local/ms-playwright/chromium-1228/chrome-win64/chrome.exe', 'C:/Program Files/Google/Chrome/Application/chrome.exe']);
+assert(image && modulePath && executablePath, 'Set THISBIT_TEST_IMAGE, THISBIT_PLAYWRIGHT_MODULE and THISBIT_BROWSER_PATH.');
+const {chromium} = require(modulePath);
+const hash = value => crypto.createHash('sha256').update(value).digest('hex');
+let commandEnvironment = process.env;
+async function command(...args) {
+  const value=await execute(process.execPath,[cli,...args],{env:commandEnvironment,windowsHide:true,timeout:65000,maxBuffer:2*1024*1024});
+  assert.equal(value.stderr.trim(),'');return JSON.parse(value.stdout);
+}
+async function at(page,x,y) {
+  return page.locator('#stage').evaluate((stage,p)=>{const r=stage.getBoundingClientRect(),c=document.querySelector('#canvas');return {x:r.x+p.x*r.width/c.width,y:r.y+p.y*r.height/c.height};},{x,y});
+}
+async function note(page,text) {await page.locator('#note-dialog').waitFor({state:'visible'});await page.locator('#note-text').fill(text);await page.locator('#note-form [type="submit"]').click();await page.locator('#note-dialog').waitFor({state:'hidden'});}
+async function agentFlow() {
+  fs.mkdirSync(output,{recursive:true});
+  const run=crypto.randomUUID(),file=path.join(output,run+'-feedback.json');
+  const session=await command('start','--image',image,'--output',file,'--name','游戏主页 · 链路测试','--page-context','  游戏主页面 <b>literal</b>  ','--timeout','1800');
+  assert(!fs.existsSync(file),'loading a screenshot must not create feedback');
+  const wait=command('wait','--session',session.sessionId,'--wait','55');
+  const browser=await chromium.launch({executablePath,headless:true});
+  const context=await browser.newContext({viewport:{width:560,height:720},acceptDownloads:true});
+  const page=await context.newPage(),errors=[],results=[];
+  page.on('pageerror',error=>errors.push(String(error)));page.on('dialog',dialog=>dialog.accept());
+  try {
+    await page.goto(session.url);
+    await page.waitForFunction(()=>document.body.dataset.agentState==='pending');
+    await page.locator('#workspace').waitFor({state:'visible'});
+    assert.equal(await page.locator('#page-description').textContent(),'游戏主页面 <b>literal</b>');
+    assert.equal(await page.locator('#page-description b').count(),0);
+    assert.equal(await page.evaluate(()=>ThisbitWeb.project().document.capture.pageSource),'agent');
+    const dims=await page.locator('#canvas').evaluate(c=>({width:c.width,height:c.height}));
+    const original='data:image/png;base64,'+fs.readFileSync(image).toString('base64');
+    assert.equal(await page.evaluate(()=>ThisbitWeb.project().document.image),original);assert.equal(await page.evaluate(()=>ThisbitWeb.feedback().image.mode),'file');
+    assert.equal(await page.locator('#export').getAttribute('aria-label'),'完成并返回 AI');
+    assert(!fs.existsSync(file));assert.equal((await command('poll','--session',session.sessionId)).state,'pending');
+    results.push('original image automatically loads from the session; no feedback before explicit submit');
+    assert.equal(await page.locator('#offline').count(),0);
+    assert.equal(await page.locator('#actual-size').count(),0);
+    const backup=JSON.parse(await downloadText(page,'#save-json'));
+    assert.equal(backup.schemaVersion,'feedback-minimal-4');assert.equal(backup.tool.name,'Thisbit');
+    assert.equal(backup.image.mode,'file');assert.deepEqual(backup.objects,[]);assert.equal(backup.image.sha256,hash(fs.readFileSync(image)));
+    assert(!fs.existsSync(file));assert.equal((await command('poll','--session',session.sessionId)).state,'pending');
+    results.push('manual JSON backup retains the complete original and never submits feedback');
+    await page.evaluate(()=>Object.defineProperty(navigator,'clipboard',{value:{writeText:async text=>window.copiedJSON=text},configurable:true}));
+    await page.locator('#save-options-toggle').click();await page.locator('#save-settings').click();await page.locator('#save-json').click();
+    await page.locator('#embed-image').check();
+    await page.locator('#copy-json').click();assert.equal(JSON.parse(await page.evaluate(()=>window.copiedJSON)).image.mode,'none');
+    await page.locator('#copy-json-options-toggle').click();await page.locator('#copy-json-options [data-copy-image="embedded"]').click();
+    await page.locator('#copy-json').click();assert.equal(JSON.parse(await page.evaluate(()=>window.copiedJSON)).image.mode,'embedded');
+    assert.equal(JSON.parse(await downloadText(page,'#download-json')).image.mode,'embedded');
+    assert.equal(await page.evaluate(()=>ThisbitWeb.feedback().image.mode),'file','manual preferences must not override the explicit Agent mode');
+    assert(!fs.existsSync(file));assert.equal((await command('poll','--session',session.sessionId)).state,'pending');
+    await page.locator('[data-close="export-dialog"]').click();
+    results.push('manual text-copy options and embedded-file backup do not submit or override the pending Agent session');
+    if(await page.locator('body').getAttribute('data-inspector-open')!=='true')await page.locator('#inspect-toggle').click();
+    await page.locator('#global').click();await note(page,'链路测试：全局意见自动返回当前对话');
+    await page.locator('#explode').click();await page.waitForFunction(()=>document.body.dataset.busy!=='true');
+    assert(await page.locator('#geometry').isHidden());
+    await page.locator('[data-mode="cut"]').click();
+    const start=await at(page,Math.floor(dims.width*.65),Math.floor(dims.height*.35)),end=await at(page,Math.floor(dims.width*.8),Math.floor(dims.height*.5));
+    await page.mouse.move(start.x,start.y);await page.mouse.down();await page.mouse.move(end.x,end.y,{steps:8});await page.mouse.up();
+    await page.waitForFunction(()=>!document.querySelector('#geometry-toggle').disabled);
+    assert(await page.locator('#geometry').isHidden(),'selecting a component does not open its popup');
+    const panelHeight=(await page.locator('.sidebar').boundingBox()).height;
+    await page.locator('#geometry-toggle').click();
+    const before=await page.evaluate(()=>Object.fromEntries(['gx','gy','gw','gh'].map(id=>[id,Number(document.getElementById(id).value)])));
+    assert.equal((await page.locator('.sidebar').boundingBox()).height,panelHeight,'popup consumes no opinion-panel height');
+    await page.locator('#gx').fill(String(before.gx+30));await page.locator('#gy').fill(String(before.gy+10));await page.locator('#apply-geometry').click();
+    const empty=await page.locator('.note-card.movement-empty').getAttribute('data-note');assert(empty);
+    await page.locator(`[data-edit="${empty}"]`).click();await note(page,'链路测试：位移箭头文字与原生 movement 一起返回');
+    await page.locator('[data-mode="rect"]').click();
+    const childStart=await at(page,before.gx+30+before.gw*.2,before.gy+10+before.gh*.2),childEnd=await at(page,before.gx+30+before.gw*.6,before.gy+10+before.gh*.6);
+    await page.mouse.move(childStart.x,childStart.y);await page.mouse.down();await page.mouse.move(childEnd.x,childEnd.y,{steps:8});await page.mouse.up();await note(page,'链路测试：移动组件内的子批注返回 AI');
+    await page.locator('[data-mode="point"]').click();const pin=await at(page,dims.width*.2,dims.height*.25);await page.mouse.click(pin.x,pin.y);await note(page,'链路测试：点批注保留原图像素坐标');
+    results.push('global, movement-arrow text, child and point annotations survive compact UI editing');
+    const expected=await page.evaluate(()=>ThisbitWeb.feedback());
+    const movement=expected.objects.find(o=>o.annotations.some(annotation => annotation.text === '链路测试：位移箭头文字与原生 movement 一起返回'));
+    assert(movement);assert.equal(movement.movement.rect.x1-movement.source.x1,30);assert.equal(movement.movement.rect.y1-movement.source.y1,10);
+    assert.equal(movement.children.length,1);assert.equal(movement.children[0].annotations[0].text,'链路测试：移动组件内的子批注返回 AI');
+    assert.deepEqual(movement.source,{x1:before.gx,y1:before.gy,x2:before.gx+before.gw,y2:before.gy+before.gh});
+    assert(expected.objects.some(o=>o.kind==='global'));assert(expected.objects.some(o=>o.kind==='point'&&Number.isInteger(o.point.x)&&Number.isInteger(o.point.y)));
+    let loseResponse=true;
+    await page.route('**/__thisbit_agent/feedback?*',async route=>{if(loseResponse){loseResponse=false;await route.fetch();await route.abort('failed');}else await route.continue();});
+    await page.locator('#export').click();
+    const receipt=await wait;assert.equal(receipt.state,'completed');
+    const expectedReceipt=expected;
+    assert.equal(expected.capture.page,'游戏主页面 <b>literal</b>');
+    assert.equal(expected.capture.fileName,path.basename(image));
+    assert.deepEqual(receipt.feedback,expectedReceipt);
+    assert(!JSON.stringify(receipt.feedback).includes('data:image/'),'the conversation receipt must not dump base64');assert.equal(fs.readFileSync(receipt.imagePath).toString('base64'),original.split(',')[1]);
+    const saved=fs.readFileSync(file);assert.equal(hash(saved),receipt.sha256);assert.deepEqual(JSON.parse(saved),expected);
+    await page.waitForFunction(()=>!document.querySelector('#export').disabled);
+    const documentBefore=await page.evaluate(()=>ThisbitWeb.feedback());await page.keyboard.press('ArrowRight');assert.deepEqual(await page.evaluate(()=>ThisbitWeb.feedback()),documentBefore,'unconfirmed delivery keeps the exact submitted snapshot');
+    await page.locator('#export').click();await page.waitForFunction(()=>document.body.dataset.agentState==='completed');
+    assert.equal(await page.locator('#export span').textContent(),'已保存');assert.equal(hash(fs.readFileSync(file)),receipt.sha256);
+    assert(await page.locator('#export-dialog').isHidden(),'Agent feedback is returned directly without a JSON copy dialog');
+    await page.screenshot({path:path.join(output,'game-feedback-returned-560x720.png')});
+    results.push('a waiting CLI receives native JSON immediately; lost HTTP responses retry idempotently');
+    const reopen=await context.newPage();await reopen.goto(session.url);await reopen.waitForFunction(()=>document.body.dataset.agentState==='completed');
+    assert((await reopen.locator('#toast').textContent()).includes('已保存'));await reopen.close();
+    const cancelledFile=path.join(output,run+'-cancelled.json');
+    const cancelled=await command('start','--image',image,'--output',cancelledFile,'--timeout','1800');
+    const other=await context.newPage();other.on('dialog',dialog=>dialog.accept());await other.goto(cancelled.url);await other.waitForFunction(()=>document.body.dataset.agentState==='pending');
+    if(await other.locator('body').getAttribute('data-inspector-open')!=='true')await other.locator('#inspect-toggle').click();
+    await other.locator('#global').click();await note(other,'链路测试：取消后仍可保存当前编辑');
+    await other.locator('#open').click();await other.waitForFunction(()=>document.body.dataset.agentState==='cancelled');
+    assert.equal((await command('wait','--session',cancelled.sessionId,'--wait','0')).state,'cancelled');assert(!fs.existsSync(cancelledFile));
+    assert.equal(await other.locator('.note-card p').textContent(),'链路测试：取消后仍可保存当前编辑');
+    results.push('cancellation returns a cancelled receipt without creating or discarding feedback');
+    const remoteFile=path.join(output,run+'-remote-cancel.json');
+    const remote=await command('start','--image',image,'--output',remoteFile,'--timeout','1800');
+    const third=await context.newPage();await third.goto(remote.url);await third.waitForFunction(()=>document.body.dataset.agentState==='pending');
+    if(await third.locator('body').getAttribute('data-inspector-open')!=='true')await third.locator('#inspect-toggle').click();
+    await third.locator('#global').click();await note(third,'链路测试：Agent 取消后保留编辑，仍可手工导出');
+    await command('cancel','--session',remote.sessionId);await third.locator('#export').click();await third.waitForFunction(()=>document.body.dataset.agentState==='cancelled');
+    assert.equal(await third.locator('#workspace').evaluate(el=>el.inert),false);assert(!fs.existsSync(remoteFile));
+    await third.locator('#export').click();assert.equal((await readExportJson(third)).objects[0].annotations[0].text,'链路测试：Agent 取消后保留编辑，仍可手工导出');
+    results.push('an externally cancelled session restores editable local export instead of freezing the workspace');
+    assert.deepEqual(errors,[]);
+    fs.writeFileSync(path.join(output,'report.json'),JSON.stringify({passed:results.length,results,sessionId:session.sessionId,output:file,sha256:receipt.sha256,feedback:receipt.feedback},null,2));
+    results.forEach(result=>console.log('PASS '+result));console.log(results.length+' Agent flow checks passed.');
+  } finally {await browser.close();}
+}
+async function main() {
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'thisbit-agent-flow-'));
+  const {server}=createPreviewServer({port:0,directory});
+  try {
+    await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',resolve);});
+    commandEnvironment={...process.env,THISBIT_WEB_PORT:String(server.address().port),THISBIT_WEB_DATA_DIR:directory};
+    await agentFlow();
+  } finally {
+    await new Promise(resolve=>server.close(resolve));
+    fs.rmSync(directory,{recursive:true,force:true});
+  }
+}
+main().catch(error=>{console.error(error);process.exitCode=1;});
